@@ -488,6 +488,56 @@ fe00::2	ip6-allrouters
 </html>
 ~~~
 
+### 6. Hipster Shop
+
+Начнем с микросервиса frontend. Его исходный код доступен по адресу [https://github.com/GoogleCloudPlatform/microservices-demo/tree/master/src/frontend](https://github.com/GoogleCloudPlatform/microservices-demo/tree/master/src/frontend)
+Склонируем и соберем собственный образ для frontend  (используя готовый Dockerfile)
+
+~~~bash
+cd microservices-demo/src/frontend
+docker build -t deron73/hipster-frontend:0.1 .
+~~~
+
+Запустим через ad-hoc режим:
+~~~bash
+kubectl run frontend --image deron73/hipster-frontend:0.1 --restart=Never
+~~~
+
+Один из распространенных кейсов использования ad-hoc режима - генерация манифестов средствами kubectl:
+~~~bash
+kubectl run frontend --image deron73/hipster-frontend:0.1 --restart=Never --dry-run=client -o yaml > frontend-pod.yaml
+~~~
+
+Выяснение причины, по которой pod frontend находится в статусе Error
+~~~bash
+kubectl get pods
+NAME       READY   STATUS    RESTARTS   AGE
+frontend   0/1     Error     0          37s
+web        1/1     Running   0          66m
+
+
+kubectl logs frontend
+{"message":"Tracing enabled.","severity":"info","timestamp":"2022-07-17T13:28:04.634511032Z"}
+{"message":"Profiling enabled.","severity":"info","timestamp":"2022-07-17T13:28:04.634606765Z"}
+panic: environment variable "PRODUCT_CATALOG_SERVICE_ADDR" not set
+
+goroutine 1 [running]:
+main.mustMapEnv(0xc0000cef20, {0xccfc12, 0x1c})
+	/src/main.go:259 +0xb9
+main.main()
+	/src/main.go:117 +0x57e
+~~~
+
+Добавим небходимый блок `env` в `frontend-pod-healthy.yaml` из [https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/kubernetes-manifests/frontend.yaml](https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/kubernetes-manifests/frontend.yaml) и проверяем:
+~~~bash
+kubectl delete pod frontend
+kubectl apply -f frontend-pod-healthy.yaml
+kubectl get pods
+NAME       READY   STATUS    RESTARTS   AGE
+frontend   1/1     Running   0          14s
+web        1/1     Running   0          77m
+~~~
+
 
 # **Полезное:**
 [Kube Forwarder](https://kube-forwarder.pixelpoint.io/)
