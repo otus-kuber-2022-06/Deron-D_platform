@@ -1,4 +1,4 @@
-# **Лекция №3: Знакомство с Kubernetes, основные понятия и архитектура // ДЗ**
+# **Лекция №2: Знакомство с Kubernetes, основные понятия и архитектура // ДЗ**
 > _kubernetes-intro_
 <details>
   <summary>Знакомство с Kubernetes</summary>
