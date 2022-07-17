@@ -543,3 +543,206 @@ web        1/1     Running   0          77m
 [Kube Forwarder](https://kube-forwarder.pixelpoint.io/)
 
 </details>
+
+# **Лекция №3: Механика запуска и взаимодействия контейнеров в Kubernetes // ДЗ**
+> _kubernetes-controllers_
+<details>
+  <summary>Kubernetes controllers.ReplicaSet, Deployment,DaemonSet</summary>
+
+## **Задание:**
+Kubernetes controllers. ReplicaSet, Deployment, DaemonSet
+
+Цель:
+В данном дз студенты научатся формировать Replicaset, Deployment для своего приложения. Научатся управлять обновлением своего приложения. Так же научатся использовать механизм Probes для проверки работоспособности своих приложений.
+
+Описание/Пошаговая инструкция выполнения домашнего задания:
+Все действия описаны в методическом указании.
+
+Критерии оценки:
+0 б. - задание не выполнено
+1 б. - задание выполнено
+2 б. - выполнены все дополнительные задания
+
+---
+
+## **Выполнено:**
+
+### 1. Подготовка
+
+- Установка kind
+
+Linux
+~~~bash
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.14.0/kind-linux-amd64
+chmod +x ./kind
+mv ./kind ~/bin/
+~~~
+
+MacOs
+~~~bash
+brew install kind
+~~~
+
+Создадим `kind-config.yaml` со следующим содержимым:
+~~~yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+- role: worker
+~~~
+
+- Запуск кластера
+~~~bash
+kind create cluster --config kind-config.yaml
+
+kubectl get nodes
+NAME                 STATUS   ROLES           AGE   VERSION
+kind-control-plane   Ready    control-plane   15m   v1.24.0
+kind-worker          Ready    <none>          14m   v1.24.0
+kind-worker2         Ready    <none>          14m   v1.24.0
+kind-worker3         Ready    <none>          14m   v1.24.0
+~~~
+
+### 2. ReplicaSet
+
+- Создадим `frontend-replicaset.yaml` со следующим содержимым:
+~~~yaml
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: server
+        image: deron73/hipster-frontend:0.1
+        env:
+          - name: PORT
+            value: "8080"
+          - name: PRODUCT_CATALOG_SERVICE_ADDR
+            value: "productcatalogservice:3550"
+          - name: CURRENCY_SERVICE_ADDR
+            value: "currencyservice:7000"
+          - name: CART_SERVICE_ADDR
+            value: "cartservice:7070"
+          - name: RECOMMENDATION_SERVICE_ADDR
+            value: "recommendationservice:8080"
+          - name: SHIPPING_SERVICE_ADDR
+            value: "shippingservice:50051"
+          - name: CHECKOUT_SERVICE_ADDR
+            value: "checkoutservice:5050"
+          - name: AD_SERVICE_ADDR
+            value: "adservice:9555"
+~~~
+
+- Деплоим и проверяем:
+
+~~~bash
+kubectl apply -f frontend-replicaset.yaml
+
+kubectl get replicaset
+NAME       DESIRED   CURRENT   READY   AGE
+frontend   1         1         1       2m58s
+
+kubectl get pods -l app=frontend
+NAME             READY   STATUS    RESTARTS   AGE
+frontend-4tbc9   1/1     Running   0          23s
+~~~
+
+- Пробуем увеличить количество реплик сервиса ad-hoc командой:
+~~~bash
+kubectl scale replicaset frontend --replicas=3
+
+kubectl get rs frontend
+NAME       DESIRED   CURRENT   READY   AGE
+frontend   3         3         3       35m
+~~~
+
+Проверим, что благодаря контроллеру pod’ы действительно восстанавливаются после их ручного удаления:
+~~~bash
+ubectl delete pods -l app=frontend | kubectl get pods -l app=frontend -w
+NAME             READY   STATUS    RESTARTS   AGE
+frontend-4tbc9   1/1     Running   0          38m
+frontend-m7d4j   1/1     Running   0          3m20s
+frontend-wnc59   1/1     Running   0          3m20s
+frontend-4tbc9   1/1     Terminating   0          38m
+frontend-m7d4j   1/1     Terminating   0          3m20s
+frontend-wnc59   1/1     Terminating   0          3m20s
+frontend-ngbxg   0/1     Pending       0          0s
+frontend-ngbxg   0/1     Pending       0          0s
+frontend-nvvb8   0/1     Pending       0          0s
+frontend-b5px5   0/1     Pending       0          0s
+frontend-ngbxg   0/1     ContainerCreating   0          0s
+frontend-nvvb8   0/1     Pending             0          0s
+frontend-b5px5   0/1     Pending             0          0s
+frontend-nvvb8   0/1     ContainerCreating   0          0s
+frontend-b5px5   0/1     ContainerCreating   0          0s
+frontend-wnc59   0/1     Terminating         0          3m21s
+frontend-4tbc9   0/1     Terminating         0          38m
+frontend-m7d4j   0/1     Terminating         0          3m21s
+frontend-wnc59   0/1     Terminating         0          3m21s
+frontend-wnc59   0/1     Terminating         0          3m21s
+frontend-m7d4j   0/1     Terminating         0          3m21s
+frontend-4tbc9   0/1     Terminating         0          38m
+frontend-4tbc9   0/1     Terminating         0          38m
+frontend-m7d4j   0/1     Terminating         0          3m21s
+frontend-ngbxg   1/1     Running             0          1s
+frontend-b5px5   1/1     Running             0          1s
+frontend-nvvb8   1/1     Running             0          1s
+~~~
+
+~~~bash
+kubectl apply -f frontend-replicaset.yaml
+replicaset.apps/frontend configured
+➜  kubernetes-controllers git:(kubernetes-controllers) ✗  kubectl get pods -l app=frontend -w
+NAME             READY   STATUS    RESTARTS   AGE
+frontend-b5px5   1/1     Running   0          80s
+~~~
+
+- Обновление ReplicaSet
+
+~~~bash
+docker tag deron73/hipster-frontend:0.1 deron73/hipster-frontend:0.2
+docker push deron73/hipster-frontend:0.2
+
+kubectl apply -f frontend-replicaset.yaml | kubectl get pods -l app=frontend -w
+
+# Давайте проверим образ, указанный в ReplicaSet:
+kubectl get replicaset frontend -o=jsonpath='{.spec.template.spec.containers[0].image}'
+deron73/hipster-frontend:0.2%
+
+# И образ из которого сейчас запущены pod, управляемые контроллером:
+kubectl get pods -l app=frontend -o=jsonpath='{.items[0:3].spec.containers[0].image}'
+deron73/hipster-frontend:0.1 deron73/hipster-frontend:0.1 deron73/hipster-frontend:0.1%
+
+# Удаляем и пересоздадим поды
+kubectl delete -f frontend-replicaset.yaml
+kubectl apply -f frontend-replicaset.yaml
+
+# Проверим опять образ из которого сейчас запущены pod, управляемые контроллером:
+kubectl get pods -l app=frontend -o=jsonpath='{.items[0:3].spec.containers[0].image}'
+deron73/hipster-frontend:0.2 deron73/hipster-frontend:0.2 deron73/hipster-frontend:0.2%
+
+# Образ обновился!
+~~~
+
+> Руководствуясь материалами лекции опишите произошедшую ситуацию, почему обновление ReplicaSet не повлекло обновление запущенных pod?
+
+ReplicaSet гарантирует только факт заданного числа запущенных экземпляров подов в кластере Kubernetes в момент времени. Т.о. ReplicaSet не перезапускает поды при обновлении спецификации пода, в отличие от Deployment.
+
+# **Полезное:**
+
+</details>
