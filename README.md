@@ -259,7 +259,237 @@ Controlled By:  DaemonSet/kube-proxy
 `kube-proxy` управляется контроллером DaemonSet, т.е. при удалении poda, DaemonSet обнаруживает его отсутствие и создаёт новый.
 
 
+### 2. Dockerfile
+Для выполнения домашней работы необходимо создать Dockerfile, в котором будет описан образ:
+  1. Запускающий web-сервер на порту 8000 (можно использовать любой способ);
+  2. Отдающий содержимое директории /app внутри контейнера (например, если в директории /app лежит файл homework.html , то при запуске контейнера данный файл должен быть доступен по URL http://localhost:8000/homework.html);
+  3. Работающий с UID 1001.
+
+
+Создаем Dockerfile cо следующим содержимым:
+~~~Dockerfile
+FROM nginx:1.23.0-alpine
+
+ENV UID=1001 \
+    GID=1001 \
+    USER=nginx \
+    GROUP=nginx
+
+RUN apk add --no-cache shadow
+RUN usermod -u ${UID} ${USER} \
+	&& groupmod -g ${GID} ${GROUP} \
+    && chown -R ${USER}:${GROUP} /var/cache/nginx \
+    && chown -R ${USER}:${GROUP} /var/log/nginx \
+    && touch /var/run/nginx.pid \
+    && chown -R ${USER}:${GROUP} /var/run/nginx.pid \
+    && sed -i '/^user[[:space:]]*nginx;$/d' /etc/nginx/nginx.conf
+
+WORKDIR /app/
+COPY ./app .
+
+COPY ./default.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 8000/tcp
+USER ${UID}:${GID}
+
+CMD ["nginx", "-g", "daemon off;"]
+~~~
+
+
+Собираем образ, запускаем, проверяем работу и выкладываем в Docker Hub:
+~~~bash
+docker build -t deron73/my-nginx-image:0.2 --no-cache .
+
+docker run -d -p 8000:8000 deron73/my-nginx-image:0.2
+f633b4b4def7c09e15a5de2c7c976bd053d2c947fab6e02b0046c61c3eb6e44a
+➜  web git:(kubernetes-prepare) ✗ curl http://localhost:8000
+<html>
+<head><title>Index of /</title></head>
+<body>
+<h1>Index of /</h1><hr><pre><a href="../">../</a>
+<a href="homework.html">homework.html</a>                                      17-Jul-2022 06:28                 112
+</pre><hr></body>
+</html>
+➜  web git:(kubernetes-prepare) ✗ docker ps
+CONTAINER ID   IMAGE                        COMMAND                  CREATED          STATUS          PORTS                                               NAMES
+f633b4b4def7   deron73/my-nginx-image:0.2   "/docker-entrypoint.…"   37 seconds ago   Up 36 seconds   80/tcp, 0.0.0.0:8000->8000/tcp, :::8000->8000/tcp   ecstatic_swanson
+➜  web git:(kubernetes-prepare) ✗ docker exec -it f633b4b4def7 sh
+/app $ ps aux
+PID   USER     TIME  COMMAND
+    1 nginx     0:00 nginx: master process nginx -g daemon off;
+   23 nginx     0:00 nginx: worker process
+   24 nginx     0:00 nginx: worker process
+   25 nginx     0:00 nginx: worker process
+   26 nginx     0:00 nginx: worker process
+   27 nginx     0:00 nginx: worker process
+   28 nginx     0:00 nginx: worker process
+   29 nginx     0:00 nginx: worker process
+   30 nginx     0:00 nginx: worker process
+   31 nginx     0:00 nginx: worker process
+   32 nginx     0:00 nginx: worker process
+   33 nginx     0:00 nginx: worker process
+   34 nginx     0:00 nginx: worker process
+   35 nginx     0:00 sh
+   41 nginx     0:00 ps aux
+/app $ id
+uid=1001(nginx) gid=1001(nginx)
+/app $ whoami
+nginx
+~~~
+
+### 3. Манифест pod
+Напишем манифест web-pod.yaml для создания pod web c меткой app со значением web, содержащего один контейнер с названием web.
+
+
+~~~bash
+kubectl apply -f web-pod.yaml
+
+kubectl get pods
+NAME   READY   STATUS    RESTARTS   AGE
+web    1/1     Running   0          12s
+
+kubectl logs  web
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: can not modify /etc/nginx/conf.d/default.conf (read-only file system?)
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2022/07/17 11:41:24 [notice] 1#1: using the "epoll" event method
+2022/07/17 11:41:24 [notice] 1#1: nginx/1.23.0
+2022/07/17 11:41:24 [notice] 1#1: built by gcc 11.2.1 20220219 (Alpine 11.2.1_git20220219)
+2022/07/17 11:41:24 [notice] 1#1: OS: Linux 5.10.57
+2022/07/17 11:41:24 [notice] 1#1: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2022/07/17 11:41:24 [notice] 1#1: start worker processes
+2022/07/17 11:41:24 [notice] 1#1: start worker process 23
+2022/07/17 11:41:24 [notice] 1#1: start worker process 24
+~~~
+
+В Kubernetes есть возможность получить манифест уже запущенного в кластере pod.
+~~~bash
+kubectl get pod web -o yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"web"},"name":"web","namespace":"default"},"spec":{"containers":[{"image":"deron73/my-nginx-image:0.2","imagePullPolicy":"Always","livenessProbe":{"tcpSocket":{"port":8000}},"name":"web","readinessProbe":{"httpGet":{"path":"/","port":8000}},"startupProbe":{"failureThreshold":30,"httpGet":{"path":"/","port":8000},"periodSeconds":10}}]}}
+  creationTimestamp: "2022-07-17T11:42:24Z"
+  labels:
+    app: web
+  name: web
+...
+~~~
+
+Другой способ посмотреть описание pod
+~~~bash
+kubectl get pod web -o yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"web"},"name":"web","namespace":"default"},"spec":{"containers":[{"image":"deron73/my-nginx-image:0.2","imagePullPolicy":"Always","livenessProbe":{"tcpSocket":{"port":8000}},"name":"web","readinessProbe":{"httpGet":{"path":"/","port":8000}},"startupProbe":{"failureThreshold":30,"httpGet":{"path":"/","port":8000},"periodSeconds":10}}]}}
+  creationTimestamp: "2022-07-17T11:42:24Z"
+...
+Events:
+  Type    Reason     Age    From               Message
+  ----    ------     ----   ----               -------
+  Normal  Scheduled  4m10s  default-scheduler  Successfully assigned default/web to minikube
+  Normal  Pulling    4m9s   kubelet            Pulling image "deron73/my-nginx-image:0.2"
+  Normal  Pulled     4m6s   kubelet            Successfully pulled image "deron73/my-nginx-image:0.2" in 3.537665473s
+  Normal  Created    4m6s   kubelet            Created container web
+  Normal  Started    4m6s   kubelet            Started container web
+~~~
+
+Шатаем pod, указав в манифесте несуществующий тег образа web
+~~~bash
+kubectl apply -f web-pod.yaml
+pod/web configured
+➜  kubernetes-intro git:(kubernetes-prepare) ✗ kubectl describe pod web
+Events:
+  Type     Reason     Age   From               Message
+  ----     ------     ----  ----               -------
+  Normal   Scheduled  11m   default-scheduler  Successfully assigned default/web to minikube
+  Normal   Pulling    11m   kubelet            Pulling image "deron73/my-nginx-image:0.2"
+  Normal   Pulled     11m   kubelet            Successfully pulled image "deron73/my-nginx-image:0.2" in 3.537665473s
+  Normal   Created    11m   kubelet            Created container web
+  Normal   Started    11m   kubelet            Started container web
+  Normal   Killing    6s    kubelet            Container web definition changed, will be restarted
+  Normal   Pulling    6s    kubelet            Pulling image "deron73/my-nginx-image:0.3"
+  Warning  Failed     1s    kubelet            Failed to pull image "deron73/my-nginx-image:0.3": rpc error: code = Unknown desc = Error response from daemon: manifest for deron73/my-nginx-image:0.3 not found: manifest unknown: manifest unknown
+  Warning  Failed     1s    kubelet            Error: ErrImagePull
+  Warning  Unhealthy  1s    kubelet            Readiness probe failed: Get "http://172.17.0.3:8000/": dial tcp 172.17.0.3:8000: connect: connection refused
+  Warning  Unhealthy  1s    kubelet            Liveness probe failed: dial tcp 172.17.0.3:8000: connect: connection refused
+  Normal   BackOff    1s    kubelet            Back-off pulling image "deron73/my-nginx-image:0.3"
+  Warning  Failed     1s    kubelet            Error: ImagePullBackOff
+~~~
+
+### 4. Init контейнеры & Volumes
+
+Добавим в наш pod [init container](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/), генерирующий страницу index.html
+Для того, чтобы файлы, созданные в init контейнере, были доступны основному контейнеру в pod нам понадобится использовать volume типа emptyDir.
+~~~yaml
+...
+    volumeMounts:
+    - name: app
+      mountPath: /app
+  initContainers:
+  - name: init-web
+    image: busybox:1.34.1
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+    - name: app
+      mountPath: /app
+    command: ['sh', '-c', 'wget -O- https://tinyurl.com/otus-k8s-intro | sh']
+  volumes:
+    - name: app
+      emptyDir: {}
+~~~
+
+Перезапускам pod
+
+~~~bash
+kubectl delete -f web-pod.yaml
+pod "web" deleted
+
+➜  kubernetes-intro git:(kubernetes-prepare) ✗ kubectl apply -f web-pod.yaml
+pod/web created
+
+➜  kubernetes-intro git:(kubernetes-prepare) ✗ kubectl get pods -w
+NAME   READY   STATUS            RESTARTS   AGE
+web    0/1     PodInitializing   0          3s
+web    0/1     Running           0          8s
+web    0/1     Running           0          10s
+web    1/1     Running           0          11s
+~~~
+
+### 5. Проверка работы приложения
+
+~~~bash
+kubectl port-forward --address 0.0.0.0 pod/web 8000:8000 &
+
+curl http://localhost:8000
+Handling connection for 8000
+<html>
+<head/>
+<body>
+<!-- IMAGE BEGINS HERE -->
+<font size="-3">
+...
+::1	localhost ip6-localhost ip6-loopback
+fe00::0	ip6-localnet
+fe00::0	ip6-mcastprefix
+fe00::1	ip6-allnodes
+fe00::2	ip6-allrouters
+172.17.0.3	web</pre>
+</body>
+</html>
+~~~
+
 
 # **Полезное:**
+[Kube Forwarder](https://kube-forwarder.pixelpoint.io/)
 
 </details>
