@@ -673,7 +673,7 @@ frontend   3         3         3       35m
 
 Проверим, что благодаря контроллеру pod’ы действительно восстанавливаются после их ручного удаления:
 ~~~bash
-ubectl delete pods -l app=frontend | kubectl get pods -l app=frontend -w
+kubectl delete pods -l app=frontend | kubectl get pods -l app=frontend -w
 NAME             READY   STATUS    RESTARTS   AGE
 frontend-4tbc9   1/1     Running   0          38m
 frontend-m7d4j   1/1     Running   0          3m20s
@@ -742,6 +742,26 @@ deron73/hipster-frontend:0.2 deron73/hipster-frontend:0.2 deron73/hipster-fronte
 > Руководствуясь материалами лекции опишите произошедшую ситуацию, почему обновление ReplicaSet не повлекло обновление запущенных pod?
 
 ReplicaSet гарантирует только факт заданного числа запущенных экземпляров подов в кластере Kubernetes в момент времени. Т.о. ReplicaSet не перезапускает поды при обновлении спецификации пода, в отличие от Deployment.
+
+
+
+- Повторим действия, проделанные с микросервисом 'frontend' для микросервиса 'paymentService'. Используем label 'app: paymentservice'.
+
+
+~~~bash
+cd microservices-demo/src/paymentservice
+docker build -t deron73/hipster-paymentservice:v0.0.1 .
+docker build -t deron73/hipster-paymentservice:v0.0.2 .
+docker push deron73/hipster-paymentservice:v0.0.1
+docker push deron73/hipster-paymentservice:v0.0.2
+
+kubectl run paymentservice --image deron73/hipster-paymentservice:v0.0.1 --restart=Never
+
+kubectl run paymentservice --image deron73/hipster-paymentservice:v0.0.1 --restart=Never --dry-run=client -o yaml > paymentservice-replicaset.yaml
+
+~~~
+
+### 3. Deployment
 
 # **Полезное:**
 
