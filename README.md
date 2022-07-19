@@ -763,6 +763,28 @@ kubectl run paymentservice --image deron73/hipster-paymentservice:v0.0.1 --resta
 
 ### 3. Deployment
 
+Скопируйте содержимое файла `paymentservice-replicaset.yaml` в файл `paymentservice-deployment.yaml`
+Изменим поле `kind` с `ReplicaSet` на `Deployment` и  проверим:
+~~~bash
+kubectl apply -f paymentservice-deployment.yaml
+
+kubectl get pods
+NAME                              READY   STATUS    RESTARTS   AGE
+paymentservice-58867c4d8d-5nr2w   1/1     Running   0          23s
+paymentservice-58867c4d8d-n6qxw   1/1     Running   0          23s
+paymentservice-58867c4d8d-qvkcj   1/1     Running   0          23s
+
+#помимо Deployment...
+kubectl get deployments
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+paymentservice   3/3     3            3           82s
+
+#появился новый ReplicaSet
+kubectl get rs
+NAME                        DESIRED   CURRENT   READY   AGE
+paymentservice-58867c4d8d   3         3         3       91s
+~~~
+
 # **Полезное:**
 
 </details>
