@@ -785,6 +785,189 @@ NAME                        DESIRED   CURRENT   READY   AGE
 paymentservice-58867c4d8d   3         3         3       91s
 ~~~
 
+#### Обновление Deployment
+
+Пробуем обновить наш Deployment на версию образа v0.0.2:
+~~~bash
+kubectl apply -f paymentservice-deployment.yaml | kubectl get pods -l app=paymentservice -w
+NAME                              READY   STATUS    RESTARTS   AGE
+paymentservice-58867c4d8d-8686q   1/1     Running   0          3m
+paymentservice-58867c4d8d-c9flt   1/1     Running   0          3m
+paymentservice-58867c4d8d-jj45k   1/1     Running   0          3m
+paymentservice-5f757978f5-6wslc   0/1     Pending   0          0s
+paymentservice-5f757978f5-6wslc   0/1     Pending   0          0s
+paymentservice-5f757978f5-6wslc   0/1     ContainerCreating   0          0s
+paymentservice-5f757978f5-6wslc   1/1     Running             0          4s
+paymentservice-58867c4d8d-c9flt   1/1     Terminating         0          3m4s
+paymentservice-5f757978f5-thktf   0/1     Pending             0          0s
+paymentservice-5f757978f5-thktf   0/1     Pending             0          0s
+paymentservice-5f757978f5-thktf   0/1     ContainerCreating   0          0s
+paymentservice-5f757978f5-thktf   1/1     Running             0          4s
+paymentservice-58867c4d8d-8686q   1/1     Terminating         0          3m8s
+paymentservice-5f757978f5-n4b8l   0/1     Pending             0          0s
+paymentservice-5f757978f5-n4b8l   0/1     Pending             0          0s
+paymentservice-5f757978f5-n4b8l   0/1     ContainerCreating   0          0s
+paymentservice-5f757978f5-n4b8l   1/1     Running             0          4s
+paymentservice-58867c4d8d-jj45k   1/1     Terminating         0          3m12s
+paymentservice-58867c4d8d-c9flt   0/1     Terminating         0          3m35s
+~~~
+
+По умолчанию применяется стратегия 'Rolling Update':
+- Создание одного нового pod с версией образа v0.0.2;
+- Удаление одного из старых pod;
+- Создание еще одного нового pod;
+- …
+
+Убедимся что:
+- Все новые pod развернуты из образа v0.0.2;
+- Создано два ReplicaSet:
+- Один (новый) управляет тремя репликами pod с образом v0.0.2;
+- Второй (старый) управляет нулем реплик pod с образом v0.0.1;
+~~~bash
+kubectl describe pods | grep -i 'pulling image'
+  Normal  Pulling    6m13s  kubelet           Pulling image "deron73/hipster-paymentservice:v0.0.2"
+  Normal  Pulling    6m5s  kubelet            Pulling image "deron73/hipster-paymentservice:v0.0.2"
+  Normal  Pulling    6m9s  kubelet            Pulling image "deron73/hipster-paymentservice:v0.0.2"
+
+
+kubectl describe rs
+Name:           paymentservice-58867c4d8d
+Namespace:      default
+Selector:       app=paymentservice,pod-template-hash=58867c4d8d
+Labels:         app=paymentservice
+                pod-template-hash=58867c4d8d
+Annotations:    deployment.kubernetes.io/desired-replicas: 3
+                deployment.kubernetes.io/max-replicas: 4
+                deployment.kubernetes.io/revision: 1
+Controlled By:  Deployment/paymentservice
+Replicas:       0 current / 0 desired
+Pods Status:    0 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:  app=paymentservice
+           pod-template-hash=58867c4d8d
+  Containers:
+   server:
+    Image:      deron73/hipster-paymentservice:v0.0.1
+    Port:       <none>
+    Host Port:  <none>
+    Environment:
+      PORT:              50051
+      DISABLE_TRACING:   1
+      DISABLE_PROFILER:  1
+      DISABLE_DEBUGGER:  1
+    Mounts:              <none>
+  Volumes:               <none>
+Events:
+  Type    Reason            Age    From                   Message
+  ----    ------            ----   ----                   -------
+  Normal  SuccessfulCreate  10m    replicaset-controller  Created pod: paymentservice-58867c4d8d-8686q
+  Normal  SuccessfulCreate  10m    replicaset-controller  Created pod: paymentservice-58867c4d8d-c9flt
+  Normal  SuccessfulCreate  10m    replicaset-controller  Created pod: paymentservice-58867c4d8d-jj45k
+  Normal  SuccessfulDelete  7m37s  replicaset-controller  Deleted pod: paymentservice-58867c4d8d-c9flt
+  Normal  SuccessfulDelete  7m33s  replicaset-controller  Deleted pod: paymentservice-58867c4d8d-8686q
+  Normal  SuccessfulDelete  7m29s  replicaset-controller  Deleted pod: paymentservice-58867c4d8d-jj45k
+
+
+Name:           paymentservice-5f757978f5
+Namespace:      default
+Selector:       app=paymentservice,pod-template-hash=5f757978f5
+Labels:         app=paymentservice
+                pod-template-hash=5f757978f5
+Annotations:    deployment.kubernetes.io/desired-replicas: 3
+                deployment.kubernetes.io/max-replicas: 4
+                deployment.kubernetes.io/revision: 2
+Controlled By:  Deployment/paymentservice
+Replicas:       3 current / 3 desired
+Pods Status:    3 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:  app=paymentservice
+           pod-template-hash=5f757978f5
+  Containers:
+   server:
+    Image:      deron73/hipster-paymentservice:v0.0.2
+    Port:       <none>
+    Host Port:  <none>
+    Environment:
+      PORT:              50051
+      DISABLE_TRACING:   1
+      DISABLE_PROFILER:  1
+      DISABLE_DEBUGGER:  1
+    Mounts:              <none>
+  Volumes:               <none>
+Events:
+  Type    Reason            Age    From                   Message
+  ----    ------            ----   ----                   -------
+  Normal  SuccessfulCreate  7m41s  replicaset-controller  Created pod: paymentservice-5f757978f5-6wslc
+  Normal  SuccessfulCreate  7m37s  replicaset-controller  Created pod: paymentservice-5f757978f5-thktf
+  Normal  SuccessfulCreate  7m33s  replicaset-controller  Created pod: paymentservice-5f757978f5-n4b8l
+~~~
+
+#### Deployment | Rollback
+
+Представим, что обновление по каким-то причинам произошло неудачно и нам необходимо сделать откат. Kubernetes предоставляет такую возможность:
+~~~bash
+kubectl rollout undo deployment paymentservice --to-revision=1 | kubectl get rs -l app=paymentservice -w
+kubectl rollout undo deployment paymentservice --to-revision=1 | kubectl get rs -l app=paymentservice -w
+NAME                        DESIRED   CURRENT   READY   AGE
+paymentservice-58867c4d8d   0         0         0       15m
+paymentservice-5f757978f5   3         3         3       12m
+paymentservice-58867c4d8d   0         0         0       15m
+paymentservice-58867c4d8d   1         0         0       15m
+paymentservice-58867c4d8d   1         0         0       15m
+paymentservice-58867c4d8d   1         1         0       15m
+paymentservice-58867c4d8d   1         1         1       15m
+paymentservice-5f757978f5   2         3         3       12m
+paymentservice-5f757978f5   2         3         3       12m
+paymentservice-58867c4d8d   2         1         1       15m
+paymentservice-5f757978f5   2         2         2       12m
+paymentservice-58867c4d8d   2         1         1       15m
+paymentservice-58867c4d8d   2         2         1       15m
+paymentservice-58867c4d8d   2         2         2       15m
+paymentservice-5f757978f5   1         2         2       12m
+paymentservice-5f757978f5   1         2         2       12m
+paymentservice-58867c4d8d   3         2         2       15m
+paymentservice-5f757978f5   1         1         1       12m
+paymentservice-58867c4d8d   3         2         2       15m
+paymentservice-58867c4d8d   3         3         2       15m
+paymentservice-58867c4d8d   3         3         3       15m
+paymentservice-5f757978f5   0         1         1       12m
+paymentservice-5f757978f5   0         1         1       12m
+paymentservice-5f757978f5   0         0         0       12m
+~~~
+
+#### Deployment | Задание со ⭐
+
+С использованием параметров 'maxSurge' и 'maxUnavailable' реализованы два следующих сценария развертывания:
+
+##### 'Аналог blue-green:' [./kubernetes-controllers/paymentservice-deployment-bg.yaml](./kubernetes-controllers/paymentservice-deployment-bg.yaml)
+1. Развертывание трех новых pod;
+2. Удаление трех старых pod;
+~~~yaml
+...
+spec:
+  replicas: 3
+  strategy:
+  rollingUpdate:
+    maxSurge: 3
+    maxUnavailable: 3
+...
+
+##### 'Аналог Reverse Rolling Update:'[./kubernetes-controllers/paymentservice-deployment-reverse.yaml](./kubernetes-controllers/paymentservice-deployment-reverse.yaml)
+1. Удаление одного старого pod;
+2. Создание одного нового pod;
+3. …
+~~~yaml
+...
+spec:
+  replicas: 3
+  strategy:
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+...
+~~~
+
 # **Полезное:**
+[Документация с описанием стратегий развертывания для Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)
 
 </details>
