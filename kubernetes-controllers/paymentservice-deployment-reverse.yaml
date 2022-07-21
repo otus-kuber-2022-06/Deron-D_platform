@@ -7,6 +7,10 @@ metadata:
     app: paymentservice
 spec:
   replicas: 3
+  strategy:
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
   selector:
     matchLabels:
       app: paymentservice
