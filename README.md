@@ -2450,6 +2450,13 @@ kubectl get rolebindings,clusterrolebindings --all-namespaces -o custom-columns=
 kubectl get rolebindings,clusterrolebindings --all-namespaces -o custom-columns='KIND:kind,NAMESPACE:metadata.namespace,NAME:metadata.name,SERVICE_ACCOUNTS:subjects[?(@.kind=="ServiceAccount")].name' | grep bob
 
 ClusterRoleBinding   <none>        bind-bob-admin                                         bob
+
+kubectl auth can-i get deployments --as system:serviceaccount:default:bob
+yes
+kubectl auth can-i get deployments --as system:serviceaccount:default:bob --all-namespaces=true
+yes
+kubectl auth can-i get pods --as system:serviceaccount:default:dave
+no
 ~~~
 
 ### **task02**
@@ -2500,7 +2507,22 @@ Role:
 Subjects:
   Kind   Name                               Namespace
   ----   ----                               ---------
-  Group  system:serviceaccounts:prometheus
+
+kubectl auth can-i get deployments --as system:serviceaccount:prometheus:carol
+no
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:carol -n prometheus
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:carol
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:cindy -n prometheus
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:cindy
+yes
+kubectl auth can-i list pods --as system:serviceaccount:default:dan -n prometheus
+serviceaccount/dan created
+no
+kubectl auth can-i list pods --as system:serviceaccount:default:dan
+no
 ~~~
 ### **task03**
 
@@ -2554,6 +2576,17 @@ Subjects:
   Kind            Name  Namespace
   ----            ----  ---------
   ServiceAccount  ken   dev
+
+kubectl auth can-i get deployments --as system:serviceaccount:dev:jane
+no
+kubectl auth can-i create deployments --as system:serviceaccount:dev:jane -n dev
+yes
+kubectl auth can-i get deployments --as system:serviceaccount:dev:ken
+no
+kubectl auth can-i get deployments --as system:serviceaccount:dev:ken -n dev
+yes
+kubectl auth can-i create deployments --as system:serviceaccount:dev:ken -n dev
+no
 ~~~
 
 
