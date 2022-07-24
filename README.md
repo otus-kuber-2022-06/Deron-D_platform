@@ -2383,3 +2383,213 @@ DaemonSet | Задание с ⭐️⭐
 [Документация с описанием стратегий развертывания для Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)
 
 </details>
+
+# **Лекция №4: Безопасность и управление доступом // ДЗ**
+> _Security_
+<details>
+  <summary>Security</summary>
+
+## **Задание:**
+Настройка сервисных аккаунтов и ограничение прав для них
+
+Цель:
+В данном дз студенты научатся создавать service account, настраивать их права в рамках одного namespace и кластера целиком.
+
+Описание/Пошаговая инструкция выполнения домашнего задания:
+Все действия описаны в методическом указании.
+
+Критерии оценки:
+0 б. - задание не выполнено
+1 б. - задание выполнено
+2 б. - выполнены все дополнительные задания
+---
+
+## **Выполнено:**
+
+### **task01**
+- Создать Service Account `bob` , дать ему роль `admin` в рамках всего кластера
+- Создать Service Account `dave` без доступа к кластер
+
+~~~bash
+cd kubernetes-security/task01
+
+kubectl apply -f .
+serviceaccount/bob created
+clusterrolebinding.rbac.authorization.k8s.io/bind-bob-admin created
+clusterrolebinding.rbac.authorization.k8s.io/bind-bob-admin unchanged
+serviceaccount/dave created
+
+kubectl get sa
+NAME      SECRETS   AGE
+bob       0         18s
+dave      0         18s
+default   0         87s
+
+kubectl describe sa bob
+Name:                bob
+Namespace:           default
+Labels:              <none>
+Annotations:         <none>
+Image pull secrets:  <none>
+Mountable secrets:   <none>
+Tokens:              <none>
+Events:              <none>
+
+kubectl describe sa dave
+Name:                dave
+Namespace:           default
+Labels:              <none>
+Annotations:         <none>
+Image pull secrets:  <none>
+Mountable secrets:   <none>
+Tokens:              <none>
+Events:              <none>
+
+kubectl get rolebindings,clusterrolebindings --all-namespaces -o custom-columns='KIND:kind,NAMESPACE:metadata.namespace,NAME:metadata.name,SERVICE_ACCOUNTS:subjects[?(@.kind=="ServiceAccount")].name' | grep dave
+
+kubectl get rolebindings,clusterrolebindings --all-namespaces -o custom-columns='KIND:kind,NAMESPACE:metadata.namespace,NAME:metadata.name,SERVICE_ACCOUNTS:subjects[?(@.kind=="ServiceAccount")].name' | grep bob
+
+ClusterRoleBinding   <none>        bind-bob-admin                                         bob
+
+kubectl auth can-i get deployments --as system:serviceaccount:default:bob
+yes
+kubectl auth can-i get deployments --as system:serviceaccount:default:bob --all-namespaces=true
+yes
+kubectl auth can-i get pods --as system:serviceaccount:default:dave
+no
+~~~
+
+### **task02**
+
+- Создать Namespace`prometheus`
+- Создать Service Account `carol` в этом Namespace
+- Дать всем Service Account в Namespace `prometheus` возможность делать `get` , `list` , `watch` в отношении Pods всего кластера
+
+~~~bash
+cd ../task02
+kubectl apply -f .
+
+kubectl get ns
+NAME              STATUS   AGE
+default           Active   31m
+kube-node-lease   Active   31m
+kube-public       Active   31m
+kube-system       Active   31m
+prometheus        Active   8s
+
+kubectl get sa -n prometheus
+NAME      SECRETS   AGE
+carol     0         34s
+default   0         34s
+
+kubectl get ClusterRole | grep prometheus-reading
+prometheus-reading                                                     2022-07-23T08:48:37Z
+
+kubectl describe ClusterRole  prometheus-reading
+Name:         prometheus-reading
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources  Non-Resource URLs  Resource Names  Verbs
+  ---------  -----------------  --------------  -----
+  pods       []                 []              [get watch list]
+
+kubectl get ClusterRoleBinding  |grep  bind-allclusterpods
+bind-allclusterpods                               ClusterRole/prometheus-reading
+
+kubectl describe ClusterRoleBinding bind-allclusterpods
+Name:         bind-allclusterpods
+Labels:       <none>
+Annotations:  <none>
+Role:
+  Kind:  ClusterRole
+  Name:  prometheus-reading
+Subjects:
+  Kind   Name                               Namespace
+  ----   ----                               ---------
+
+kubectl auth can-i get deployments --as system:serviceaccount:prometheus:carol
+no
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:carol -n prometheus
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:carol
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:cindy -n prometheus
+yes
+kubectl auth can-i list pods --as system:serviceaccount:prometheus:cindy
+yes
+kubectl auth can-i list pods --as system:serviceaccount:default:dan -n prometheus
+serviceaccount/dan created
+no
+kubectl auth can-i list pods --as system:serviceaccount:default:dan
+no
+~~~
+### **task03**
+
+- Создать Namespace 'dev'
+- Создать Service Account 'jane' в Namespace 'dev'
+- Дать 'jane' роль 'admin' в рамках Namespace 'dev'
+- Создать Service Account 'ken' в Namespace 'dev'
+- Дать 'ken' роль 'view' в рамках Namespace 'dev'
+
+~~~bash
+kubectl get ns
+NAME              STATUS   AGE
+default           Active   74m
+dev               Active   8s
+kube-node-lease   Active   74m
+kube-public       Active   74m
+kube-system       Active   74m
+prometheus        Active   43m
+
+kubectl get sa -n dev
+NAME      SECRETS   AGE
+default   0         18m
+jane      0         18m
+ken       0         18m
+
+kubectl get RoleBinding -n dev
+NAME        ROLE                AGE
+bind-jane   ClusterRole/admin   19m
+bind-ken    ClusterRole/view    19m
+
+kubectl describe RoleBinding -n dev bind-jane
+Name:         bind-jane
+Labels:       <none>
+Annotations:  <none>
+Role:
+  Kind:  ClusterRole
+  Name:  admin
+Subjects:
+  Kind            Name  Namespace
+  ----            ----  ---------
+  ServiceAccount  jane  dev
+
+kubectl describe RoleBinding -n dev bind-ken
+Name:         bind-ken
+Labels:       <none>
+Annotations:  <none>
+Role:
+  Kind:  ClusterRole
+  Name:  view
+Subjects:
+  Kind            Name  Namespace
+  ----            ----  ---------
+  ServiceAccount  ken   dev
+
+kubectl auth can-i get deployments --as system:serviceaccount:dev:jane
+no
+kubectl auth can-i create deployments --as system:serviceaccount:dev:jane -n dev
+yes
+kubectl auth can-i get deployments --as system:serviceaccount:dev:ken
+no
+kubectl auth can-i get deployments --as system:serviceaccount:dev:ken -n dev
+yes
+kubectl auth can-i create deployments --as system:serviceaccount:dev:ken -n dev
+no
+~~~
+
+
+# **Полезное:**
+
+</details>
