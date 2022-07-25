@@ -3022,7 +3022,7 @@ iptables --list -nv -t nat | grep 10.108.156.139
 ~~~
 > [Kubernetes Services and Iptables](https://msazure.club/kubernetes-services-and-iptables/)
 
-### 4.Включен IPVS
+### 4. Включен IPVS
 
 > При запуске нового инстанса Minikube лучше использовать ключ `--extra-config` и сразу указать, что мы хотим IPVS
 
@@ -3338,6 +3338,234 @@ ip addr show kube-ipvs0
        valid_lft forever preferred_lft forever
     inet 10.108.202.82/32 scope global kube-ipvs0
        valid_lft forever preferred_lft forever
+~~~
+## Работа с LoadBalancer и Ingress
+### 5. Установка MetalLB
+
+MetalLB позволяет запустить внутри кластера L4-балансировщик, который будет принимать извне запросы к сервисам и раскидывать их
+между подами.
+Установка:
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/metallb.yaml
+kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+~~~
+
+Проверка:
+~~~bash
+kubectl --namespace metallb-system get all
+
+NAME                              READY   STATUS    RESTARTS   AGE
+pod/controller-7696f658c8-wqzcm   1/1     Running   0          93s
+pod/speaker-tvcwh                 1/1     Running   0          93s
+
+NAME                     DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR                 AGE
+daemonset.apps/speaker   1         1         1       1            1           beta.kubernetes.io/os=linux   93s
+
+NAME                         READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/controller   1/1     1            1           93s
+
+NAME                                    DESIRED   CURRENT   READY   AGE
+replicaset.apps/controller-7696f658c8   1         1         1       93s
+~~~
+
+Теперь настроим балансировщик с помощью `ConfigMap`
+
+Создадим манифест [metallb-config.yaml](kubernetes-networks/metallb-config.yaml)
+
+В конфигурации мы настраиваем:
+- Режим L2 (анонс адресов балансировщиков с помощью ARP)
+- Создаем пул адресов 172.17.255.1 - 172.17.255.255 - они будут назначаться сервисам с типом `LoadBalancer`
+
+Применяем:
+~~~bash
+kubectl apply -f metallb-config.yaml
+configmap/config created
+~~~
+
+Сделаем копию файла `web-svc-cip.yaml` в `web-svc-lb.yaml` и изменим имя сервиса и его тип на `LoadBalancer`
+~~~bash
+kubectl apply -f web-svc-lb.yaml
+service/web-svc-lb created
+~~~
+
+Теперь посмотрим логи пода-контроллера MetalLB
+~~~bash
+kubectl get pods -n metallb-system
+NAME                          READY   STATUS    RESTARTS   AGE
+controller-7696f658c8-wqzcm   1/1     Running   0          12m
+speaker-tvcwh                 1/1     Running   0          12m
+
+kubectl --namespace metallb-system logs pod/controller-7696f658c8-wqzcm
+...
+{"caller":"service.go:114","event":"ipAllocated","ip":"172.17.255.1","msg":"IP address assigned by controller","service":"default/web-svc-lb","ts":"2022-07-25T18:14:58.840882965Z"}
+...
+kubectl describe svc web-svc-lb
+
+kubectl describe svc web-svc-lb
+Name:                     web-svc-lb
+Namespace:                default
+Labels:                   <none>
+Annotations:              <none>
+Selector:                 app=web
+Type:                     LoadBalancer
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.101.76.41
+IPs:                      10.101.76.41
+LoadBalancer Ingress:     172.17.255.1
+Port:                     <unset>  80/TCP
+TargetPort:               8000/TCP
+NodePort:                 <unset>  30761/TCP
+Endpoints:                172.17.0.4:8000,172.17.0.5:8000,172.17.0.6:8000
+Session Affinity:         None
+External Traffic Policy:  Cluster
+Events:                   <none>
+~~~
+
+### MetalLB | Проверка конфигурации
+
+#### Настроим route
+~~~bash
+minikube ssh
+ip addr show eth0
+12: eth0@if13: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
+    link/ether 02:42:c0:a8:31:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 192.168.49.2/24 brd 192.168.49.255 scope global eth0
+       valid_lft forever preferred_lft forever
+docker@minikube:~$ exit
+logout
+sudo ip route add 172.17.255.0/24 via 192.168.49.2
+~~~
+
+![1.png](kubernetes-networks/png/1.png)
+
+Задание со ⭐️⭐️ | DNS через MetalLB
+
+Сделаем сервис 'LoadBalancer' ( [core-dns.yaml](kubernetes-networks/coredns/core-dns.yaml) ), который откроет доступ к CoreDNS снаружи кластера (позволит получать записи через внешний IP)
+
+> Hint [https://metallb.universe.tf/usage/](https://metallb.universe.tf/usage/). IP Address Sharing
+
+~~~bash
+cd ./coredns
+kubectl apply -f core-dns.yaml
+kubectl get service -n kube-system
+NAME               TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)                  AGE
+external-dns-tcp   LoadBalancer   10.96.119.156   172.17.255.10   53:31626/TCP             27m
+external-dns-udp   LoadBalancer   10.106.78.118   172.17.255.10   53:30111/UDP             27m
+kube-dns           ClusterIP      10.96.0.10      <none>          53/UDP,53/TCP,9153/TCP   61m
+
+nslookup web-svc-lb.default.svc.cluster.local 172.17.255.10
+Server:         172.17.255.10
+Address:        172.17.255.10#53
+
+Name:   web-svc-lb.default.svc.cluster.local
+Address: 10.101.76.41
+~~~
+
+### 6. Создание Ingress
+
+Установка начинается с основного манифеста:
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/provider/baremetal/deploy.yaml
+namespace/ingress-nginx created
+serviceaccount/ingress-nginx created
+serviceaccount/ingress-nginx-admission created
+role.rbac.authorization.k8s.io/ingress-nginx created
+role.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrole.rbac.authorization.k8s.io/ingress-nginx created
+clusterrole.rbac.authorization.k8s.io/ingress-nginx-admission created
+rolebinding.rbac.authorization.k8s.io/ingress-nginx created
+rolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx created
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+configmap/ingress-nginx-controller created
+service/ingress-nginx-controller created
+service/ingress-nginx-controller-admission created
+deployment.apps/ingress-nginx-controller created
+job.batch/ingress-nginx-admission-create created
+job.batch/ingress-nginx-admission-patch created
+ingressclass.networking.k8s.io/nginx created
+validatingwebhookconfiguration.admissionregistration.k8s.io/ingress-nginx-admission created
+~~~
+
+> Варианты установки
+> https://kubernetes.github.io/ingress-nginx/deploy/#bare-metal
+> Можно сделать просто 'minikube addons enable ingress'
+
+Создадим файл [nginx-lb.yaml](kubernetes-networks/nginx-lb.yaml) c конфигурацией `LoadBalancer` - сервиса
+~~~bash
+kubectl get services -A
+NAMESPACE       NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                      AGE
+default         kubernetes                           ClusterIP      10.96.0.1        <none>          443/TCP                      96m
+default         web-svc-lb                           LoadBalancer   10.101.76.41     172.17.255.1    80:30761/TCP                 83m
+ingress-nginx   ingress-nginx                        LoadBalancer   10.110.133.182   172.17.255.2    80:30240/TCP,443:30635/TCP   85s
+ingress-nginx   ingress-nginx-controller             NodePort       10.108.110.80    <none>          80:31215/TCP,443:32669/TCP   6m29s
+ingress-nginx   ingress-nginx-controller-admission   ClusterIP      10.105.110.208   <none>          443/TCP                      6m29s
+kube-system     dns-service-tcp                      LoadBalancer   10.98.115.134    <pending>       53:31960/TCP                 34m
+kube-system     dns-service-udp                      LoadBalancer   10.103.189.20    <pending>       53:32697/UDP                 34m
+kube-system     external-dns-tcp                     LoadBalancer   10.96.119.156    172.17.255.10   53:31626/TCP                 63m
+kube-system     external-dns-udp                     LoadBalancer   10.106.78.118    172.17.255.10   53:30111/UDP                 63m
+kube-system     kube-dns                             ClusterIP      10.96.0.10       <none>          53/UDP,53/TCP,9153/TCP       96m
+
+curl http://172.17.255.2
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+~~~
+
+### Подключение приложение Web к Ingress
+
+Наш Ingress-контроллер не требует ClusterIP для балансировки трафика
+Список узлов для балансировки заполняется из ресурса Endpoints нужного сервиса (это нужно для "интеллектуальной" балансировки,
+привязки сессий и т.п.)
+Поэтому мы можем использовать headless-сервис для нашего вебприложения.
+Скопируем `web-svc-cip.yaml` в `web-svc-headless.yaml` изменим имя сервиса на `web-svc`, добавим параметр `clusterIP: None`
+
+Применим полученный манифест и проверим, что `ClusterIP` для сервиса `web-svc` действительно не назначен
+~~~bash
+kubectl apply -f web-svc-headless.yaml
+kubectl get services -A | grep web-svc
+default         web-svc                              ClusterIP      None             <none>          80/TCP                       30s
+default         web-svc-lb                           LoadBalancer   10.101.76.41     172.17.255.1    80:30761/TCP                 90m
+~~~
+
+### Создание правил Ingress
+
+Теперь настроим наш ingress-прокси, создав манифест с ресурсом `Ingress` (файл [web-ingress.yaml](kubernetes-networks/web-ingress.yaml) ):
+Применим манифест и проверим, что корректно заполнены `Address` и `Backends`
+~~~bash
+kubectl apply -f web-ingress.yaml
+ingress.networking.k8s.io/web created
+
+kubectl describe ingress/web
+Labels:           <none>
+Namespace:        default
+Address:          192.168.49.2
+Ingress Class:    nginx
+Default backend:  <default>
+Rules:
+  Host        Path  Backends
+  ----        ----  --------
+  *
+              /web   web-svc:8000 (172.17.0.4:8000,172.17.0.5:8000,172.17.0.6:8000)
+Annotations:  nginx.ingress.kubernetes.io/rewrite-target: /
+Events:
+  Type    Reason  Age                From                      Message
+  ----    ------  ----               ----                      -------
+  Normal  Sync    84s (x2 over 94s)  nginx-ingress-controller  Scheduled for sync
+
+curl http://172.17.255.2/web/index.html
+<html>
+<head/>
+<body>
+<!-- IMAGE BEGINS HERE -->
+<font size="-3">
+...
 ~~~
 
 # **Полезное:**
