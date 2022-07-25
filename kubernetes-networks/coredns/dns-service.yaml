@@ -37,4 +37,3 @@ spec:
       protocol: UDP
   selector:
     k8s-app: kube-dns
----
