@@ -11,7 +11,7 @@ spec:
   - host:
     http:
       paths:
-      - path: /web(/|$)(.*)
+      - path: /web
         pathType: Prefix
         backend:
           service:
