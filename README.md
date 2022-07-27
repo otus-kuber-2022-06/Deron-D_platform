@@ -2588,8 +2588,1024 @@ yes
 kubectl auth can-i create deployments --as system:serviceaccount:dev:ken -n dev
 no
 ~~~
+# **Полезное:**
+
+</details>
+
+# **Лекция №5: Сетевая подсистема Kubernetes // ДЗ**
+> _Сетевое взаимодействие Pod, сервисы_
+<details>
+  <summary>Работа с тестовым веб-приложением</summary>
+
+## **Задание:**
+Домашнее задание
+Настройка сетевой связности для приложения. Добавление service, ingress. Установка MetalLB
+
+Цель:
+В данном дз студенты научатся устанавливать и конфигурировать MetalLB, использовать loadbalancer и Ingress.
+
+Описание/Пошаговая инструкция выполнения домашнего задания:
+Все действия описаны в методическом указании.
+
+Критерии оценки:
+0 б. - задание не выполнено
+1 б. - задание выполнено
+2 б. - выполнены все дополнительные задания
+
+---
+
+### **План работы:**
+
+#### Работа с тестовым веб-приложением
+
+- Добавление проверок 'Pod'
+- Создание объекта 'Deployment'
+- Добавление сервисов в кластер ( 'ClusterIP' )
+- Включение режима балансировки 'IPVS'
+- Доступ к приложению извне кластера
+- Установка 'MetalLB' в Layer2-режиме
+- Добавление сервиса 'LoadBalancer'
+- Установка Ingress-контроллера и прокси 'ingress-nginx'
+- Создание правил 'Ingress'
+
+## **Выполнено:**
+
+### 1. Добавлены проверки 'Pod'
+
+Откроем файл с описанием Pod из предыдущего ДЗ ( kubernetesintro/web-pod.yml ) и добавим в описание пода `readinessProbe`
+~~~yaml
+...
+spec:
+ containers:
+ - name: web
+   image: thatsme/web:1.2
+   # --- BEGIN ---
+   readinessProbe: # Добавим проверку готовности
+     httpGet: # веб-сервера отдавать
+       path: /index.html # контент
+       port: 80
+   # --- END ---
+~~~
+
+Проверяем
+~~~bash
+kubectl apply -f web-pod.yaml
+pod/web created
+
+kubectl get pod/web
+NAME   READY   STATUS    RESTARTS   AGE
+web    0/1     Running   0          64s
+
+kubectl describe pod/web | grep Readiness
+    Readiness:      http-get http://:80/index.html delay=0s timeout=1s period=10s #success=1 #failure=3
+  Warning  Unhealthy  2s (x11 over 85s)  kubelet            Readiness probe failed: Get "http://172.17.0.3:80/index.html": dial tcp 172.17.0.3:80: connect: connection refused
+~~~
+
+Из листинга выше видно, что проверка готовности контейнера завершается неудачно. Это неудивительно - веб-сервер в контейнере
+слушает порт 8000 (по условиям первого ДЗ).
+Пока мы не будем исправлять эту ошибку, а добавим другой вид проверок: 'livenessProbe' .
+Добавим в манифест проверку состояния вебсервера
+~~~yaml
+    livenessProbe:
+      tcpSocket: { port: 8000 }
+~~~
+
+ и запустим Pod с новой конфигурацией:
+~~~bash
+kubectl apply -f web-pod.yaml
+
+kubectl describe pod/web | grep Liveness
+    Liveness:       tcp-socket :8000 delay=0s timeout=1s period=10s #success=1 #failure=3
+~~~
+
+### Вопрос для самопроверки:
+1. Почему следующая конфигурация валидна, но не имеет смысла?
+~~~yaml
+livenessProbe:
+  exec:
+    command:
+      - 'sh'
+      - '-c'
+      - 'ps aux | grep my_web_server_process'
+~~~
+
+~~~bash
+minikube ssh
+ps aux | grep my_web_server_process
+docker      6498  0.0  0.0   3352   448 pts/0    S+   14:50   0:00 grep my_web_server_process
+$ echo $?
+0
+~~~
+
+Смысла нет, т.к. всегда возвращается 0 успешного нахождения самого grep
+
+2. Бывают ли ситуации, когда она все-таки имеет смысл?
+
+> [https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes)
+
+~~~bash
+minikube ssh
+ps aux | grep my_web_server_process | grep -v grep
+$ echo $?
+1
+ps aux | grep nginx | grep -v grep
+dbus        2585  0.0  0.1   6292  4412 ?        Ss   14:46   0:00 nginx: master process nginx -g daemon off;
+dbus        2613  0.0  0.0   6748  1708 ?        S    14:46   0:00 nginx: worker process
+dbus        2614  0.0  0.0   6748  1708 ?        S    14:46   0:00 nginx: worker process
+$ echo $?
+0
+~~~
+
+Имеет смысл, если убрать из вывода запроса grep (ps aux | grep my_web_server_process | grep -v grep) и в таком случае будет проводиться простая проверка - запущен ли процесс или нет. И наличие процесса в списке процессов не всегда говорит об его отзывчивости и жизнеспособности.
+
+### 2. Создан объект 'Deployment'
+
+Создадим [web-deploy.yaml](kubernetes-networks/web-deploy.yaml)
+
+~~~bash
+kubectl delete pod/web --grace-period=0 --force
+warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+pod "web" force deleted
+
+kubectl apply -f web-deploy.yaml
+deployment.apps/web created
+
+kubectl describe deployment web
+
+Name:                   web
+Namespace:              default
+CreationTimestamp:      Sun, 24 Jul 2022 18:23:16 +0300
+Labels:                 <none>
+Annotations:            deployment.kubernetes.io/revision: 1
+Selector:               app=web
+Replicas:               1 desired | 1 updated | 1 total | 0 available | 1 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=web
+  Init Containers:
+   init-web:
+    Image:      busybox:1.34.1
+    Port:       <none>
+    Host Port:  <none>
+    Command:
+      sh
+      -c
+      wget -O- https://tinyurl.com/otus-k8s-intro | sh
+    Environment:  <none>
+    Mounts:
+      /app from app (rw)
+  Containers:
+   web:
+    Image:        deron73/my-nginx-image:0.2
+    Port:         <none>
+    Host Port:    <none>
+    Liveness:     tcp-socket :8000 delay=0s timeout=1s period=10s #success=1 #failure=3
+    Readiness:    http-get http://:80/index.html delay=0s timeout=1s period=10s #success=1 #failure=3
+    Startup:      http-get http://:8000/ delay=0s timeout=1s period=10s #success=1 #failure=30
+    Environment:  <none>
+    Mounts:
+      /app from app (rw)
+  Volumes:
+   app:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:  <unset>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  **Available      False   MinimumReplicasUnavailable**
+  Progressing    True    ReplicaSetUpdated
+OldReplicaSets:  <none>
+NewReplicaSet:   web-84968f58bc (1/1 replicas created)
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  ScalingReplicaSet  4s    deployment-controller  Scaled up replica set web-84968f58bc to 1
+~~~
+
+Поскольку мы не исправили ReadinessProbe , то поды, входящие в наш Deployment, не переходят в состояние Ready из-за неуспешной проверки.
+На предыдущем 'describe'' видно, что это влияет на состояние всего Deployment (строчка `Available` в блоке Conditions)
+Поменяем в файле [web-deploy.yaml](kubernetes-networks/web-deploy.yaml) следующие параметры:
+- Увеличим число реплик до 3 ( replicas: 3 )
+- Исправим порт в `readinessProbe` на порт `8000`
+~~~bash
+kubectl apply -f web-deploy.yaml
+kubectl describe deploy/web | grep MinimumReplicasAvailable
+  Available      True    MinimumReplicasAvailable
+~~~
+
+Добавим в манифест [web-deploy.yaml](kubernetes-networks/web-deploy.yaml) блок `strategy` (можно сразу перед шаблоном пода)
+~~~yaml
+...
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 100%
+...
+~~~
+
+Попробуем разные варианты деплоя с крайними значениями maxSurge и maxUnavailable (оба 0, оба 100%, 0 и 100%)
+- оба 0
+~~~bash
+kubectl get events --watch
+kubespy trace deploy web
+
+kubectl apply -f web-deploy.yaml
+The Deployment "web" is invalid: spec.strategy.rollingUpdate.maxUnavailable: Invalid value: intstr.IntOrString{Type:0, IntVal:0, StrVal:""}: may not be 0 when `maxSurge` is 0
+~~~
+
+- оба 100%
+~~~bash
+kubectl get events --watch
+kubespy trace deploy web
+
+kubectl apply -f web-deploy.yaml
+...
+Normal    ScalingReplicaSet         deployment/web              Scaled up replica set web-5cc4f55d79 to 3
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-6cxts    Successfully assigned default/web-5cc4f55d79-6cxts to minikube
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled down replica set web-7cbb7dc674 to 0
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-6cxts
+0s          Normal    Killing                   pod/web-7cbb7dc674-486g2    Stopping container web
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-v797c    Successfully assigned default/web-5cc4f55d79-v797c to minikube
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-v797c
+0s          Normal    Killing                   pod/web-7cbb7dc674-nwfv2    Stopping container web
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-brbpd
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-g6cj7    Successfully assigned default/web-5cc4f55d79-g6cj7 to minikube
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-g6cj7
+0s          Normal    Killing                   pod/web-7cbb7dc674-brbpd    Stopping container web
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-486g2
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-nwfv2
+0s          Normal    Pulled                    pod/web-5cc4f55d79-6cxts    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-5cc4f55d79-6cxts    Created container init-web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-v797c    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-5cc4f55d79-v797c    Created container init-web
+0s          Normal    Started                   pod/web-5cc4f55d79-6cxts    Started container init-web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-g6cj7    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Started                   pod/web-5cc4f55d79-v797c    Started container init-web
+0s          Normal    Created                   pod/web-5cc4f55d79-g6cj7    Created container init-web
+0s          Normal    Started                   pod/web-5cc4f55d79-g6cj7    Started container init-web
+0s          Normal    Pulling                   pod/web-5cc4f55d79-6cxts    Pulling image "deron73/my-nginx-image:0.2"
+0s          Normal    Pulling                   pod/web-5cc4f55d79-g6cj7    Pulling image "deron73/my-nginx-image:0.2"
+0s          Normal    Pulling                   pod/web-5cc4f55d79-v797c    Pulling image "deron73/my-nginx-image:0.2"
+0s          Normal    Pulled                    pod/web-5cc4f55d79-6cxts    Successfully pulled image "deron73/my-nginx-image:0.2" in 4.074349582s
+0s          Normal    Created                   pod/web-5cc4f55d79-6cxts    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-6cxts    Started container web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-g6cj7    Successfully pulled image "deron73/my-nginx-image:0.2" in 7.538244936s
+0s          Normal    Created                   pod/web-5cc4f55d79-g6cj7    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-g6cj7    Started container web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-v797c    Successfully pulled image "deron73/my-nginx-image:0.2" in 9.584457519s
+0s          Normal    Created                   pod/web-5cc4f55d79-v797c    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-v797c    Started container web
+~~~
+
+- `maxUnavailable: 0` `maxSurge: 100%`
+~~~bash
+kubespy trace deploy web
+kubectl get events --watch
+
+kubectl apply -f web-deploy.yaml
+...
+5m20s       Normal    Killing                   pod/web-7cbb7dc674-p694n    Stopping container web
+7m31s       Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-p694n
+7m31s       Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-kl8rj
+7m31s       Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-gbrwz
+5m20s       Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-gbrwz
+5m20s       Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-p694n
+5m20s       Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-kl8rj
+7m31s       Normal    ScalingReplicaSet         deployment/web              Scaled up replica set web-7cbb7dc674 to 3
+5m20s       Normal    ScalingReplicaSet         deployment/web              Scaled up replica set web-5cc4f55d79 to 3
+5m20s       Normal    ScalingReplicaSet         deployment/web              Scaled down replica set web-7cbb7dc674 to 0
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled up replica set web-7cbb7dc674 to 3
+0s          Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-ds5rs
+0s          Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-47wq8
+0s          Normal    Scheduled                 pod/web-7cbb7dc674-ds5rs    Successfully assigned default/web-7cbb7dc674-ds5rs to minikube
+0s          Normal    SuccessfulCreate          replicaset/web-7cbb7dc674   Created pod: web-7cbb7dc674-shh8t
+0s          Normal    Scheduled                 pod/web-7cbb7dc674-shh8t    Successfully assigned default/web-7cbb7dc674-shh8t to minikube
+0s          Normal    Scheduled                 pod/web-7cbb7dc674-47wq8    Successfully assigned default/web-7cbb7dc674-47wq8 to minikube
+0s          Normal    Pulled                    pod/web-7cbb7dc674-47wq8    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-7cbb7dc674-47wq8    Created container init-web
+0s          Normal    Started                   pod/web-7cbb7dc674-47wq8    Started container init-web
+0s          Normal    Pulled                    pod/web-7cbb7dc674-shh8t    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-7cbb7dc674-shh8t    Created container init-web
+0s          Normal    Started                   pod/web-7cbb7dc674-shh8t    Started container init-web
+0s          Normal    Pulled                    pod/web-7cbb7dc674-ds5rs    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-7cbb7dc674-ds5rs    Created container init-web
+0s          Normal    Started                   pod/web-7cbb7dc674-ds5rs    Started container init-web
+0s          Normal    Pulling                   pod/web-7cbb7dc674-ds5rs    Pulling image "deron73/my-nginx-image:0.1"
+0s          Normal    Pulling                   pod/web-7cbb7dc674-shh8t    Pulling image "deron73/my-nginx-image:0.1"
+0s          Normal    Pulling                   pod/web-7cbb7dc674-47wq8    Pulling image "deron73/my-nginx-image:0.1"
+0s          Normal    Pulled                    pod/web-7cbb7dc674-ds5rs    Successfully pulled image "deron73/my-nginx-image:0.1" in 3.982455082s
+0s          Normal    Created                   pod/web-7cbb7dc674-ds5rs    Created container web
+0s          Normal    Started                   pod/web-7cbb7dc674-ds5rs    Started container web
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-ds5rs    Startup probe failed: Get "http://172.17.0.5:8000/": dial tcp 172.17.0.5:8000: connect: connection refused
+0s          Normal    Pulled                    pod/web-7cbb7dc674-shh8t    Successfully pulled image "deron73/my-nginx-image:0.1" in 6.01617378s
+0s          Normal    Created                   pod/web-7cbb7dc674-shh8t    Created container web
+0s          Normal    Started                   pod/web-7cbb7dc674-shh8t    Started container web
+0s          Normal    Pulled                    pod/web-7cbb7dc674-47wq8    Successfully pulled image "deron73/my-nginx-image:0.1" in 8.46008436s
+0s          Normal    Created                   pod/web-7cbb7dc674-47wq8    Created container web
+0s          Normal    Started                   pod/web-7cbb7dc674-47wq8    Started container web
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-ds5rs    Startup probe failed: Get "http://172.17.0.5:8000/": dial tcp 172.17.0.5:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-shh8t    Startup probe failed: Get "http://172.17.0.4:8000/": dial tcp 172.17.0.4:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-47wq8    Startup probe failed: Get "http://172.17.0.3:8000/": dial tcp 172.17.0.3:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-ds5rs    Startup probe failed: Get "http://172.17.0.5:8000/": dial tcp 172.17.0.5:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-shh8t    Startup probe failed: Get "http://172.17.0.4:8000/": dial tcp 172.17.0.4:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-47wq8    Startup probe failed: Get "http://172.17.0.3:8000/": dial tcp 172.17.0.3:8000: connect: connection refused
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled up replica set web-5cc4f55d79 to 3
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-nr6c4
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-nr6c4    Successfully assigned default/web-5cc4f55d79-nr6c4 to minikube
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-kxkdm
+0s          Normal    SuccessfulCreate          replicaset/web-5cc4f55d79   Created pod: web-5cc4f55d79-stvv4
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-stvv4    Successfully assigned default/web-5cc4f55d79-stvv4 to minikube
+0s          Normal    Scheduled                 pod/web-5cc4f55d79-kxkdm    Successfully assigned default/web-5cc4f55d79-kxkdm to minikube
+0s          Normal    Pulled                    pod/web-5cc4f55d79-nr6c4    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-5cc4f55d79-nr6c4    Created container init-web
+0s          Normal    Started                   pod/web-5cc4f55d79-nr6c4    Started container init-web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-kxkdm    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-5cc4f55d79-kxkdm    Created container init-web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-stvv4    Container image "busybox:1.34.1" already present on machine
+0s          Normal    Created                   pod/web-5cc4f55d79-stvv4    Created container init-web
+0s          Normal    Started                   pod/web-5cc4f55d79-kxkdm    Started container init-web
+0s          Normal    Started                   pod/web-5cc4f55d79-stvv4    Started container init-web
+0s          Normal    Pulling                   pod/web-5cc4f55d79-stvv4    Pulling image "deron73/my-nginx-image:0.2"
+0s          Normal    Pulling                   pod/web-5cc4f55d79-kxkdm    Pulling image "deron73/my-nginx-image:0.2"
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-ds5rs    Startup probe failed: Get "http://172.17.0.5:8000/": dial tcp 172.17.0.5:8000: connect: connection refused
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-shh8t    Startup probe failed: Get "http://172.17.0.4:8000/": dial tcp 172.17.0.4:8000: connect: connection refused
+0s          Normal    Pulling                   pod/web-5cc4f55d79-nr6c4    Pulling image "deron73/my-nginx-image:0.2"
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-47wq8    Startup probe failed: Get "http://172.17.0.3:8000/": dial tcp 172.17.0.3:8000: connect: connection refused
+0s          Normal    Pulled                    pod/web-5cc4f55d79-stvv4    Successfully pulled image "deron73/my-nginx-image:0.2" in 2.884806683s
+0s          Normal    Created                   pod/web-5cc4f55d79-stvv4    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-stvv4    Started container web
+0s          Normal    Pulled                    pod/web-5cc4f55d79-kxkdm    Successfully pulled image "deron73/my-nginx-image:0.2" in 6.438183753s
+0s          Normal    Created                   pod/web-5cc4f55d79-kxkdm    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-kxkdm    Started container web
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled down replica set web-7cbb7dc674 to 2
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-ds5rs
+0s          Normal    Killing                   pod/web-7cbb7dc674-ds5rs    Stopping container web
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled down replica set web-7cbb7dc674 to 1
+0s          Normal    Killing                   pod/web-7cbb7dc674-shh8t    Stopping container web
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-shh8t
+0s          Normal    Pulled                    pod/web-5cc4f55d79-nr6c4    Successfully pulled image "deron73/my-nginx-image:0.2" in 7.676841316s
+0s          Normal    Created                   pod/web-5cc4f55d79-nr6c4    Created container web
+0s          Normal    Started                   pod/web-5cc4f55d79-nr6c4    Started container web
+0s          Warning   Unhealthy                 pod/web-7cbb7dc674-47wq8    Startup probe failed: Get "http://172.17.0.3:8000/": dial tcp 172.17.0.3:8000: connect: connection refused
+0s          Normal    ScalingReplicaSet         deployment/web              Scaled down replica set web-7cbb7dc674 to 0
+0s          Normal    Killing                   pod/web-7cbb7dc674-47wq8    Stopping container web
+0s          Normal    SuccessfulDelete          replicaset/web-7cbb7dc674   Deleted pod: web-7cbb7dc674-47wq8
+~~~
+
+### 3. Создан объект 'Service'
+
+Cоздадим манифест для нашего сервиса в папке `kubernetes-networks` .
+Файл [web-svc-cip.yaml](kubernetes-networks/web-svc-cip.yaml):
+~~~bash
+kubernetes-networks/web-svc-cip.yaml
+
+kubectl get services
+NAME          TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+kubernetes    ClusterIP   10.96.0.1        <none>        443/TCP   46m
+web-svc-cip   ClusterIP   10.108.156.139   <none>        80/TCP    62s
+
+minikube ssh
+sudo -i
+# curl http://10.108.156.139/index.html
+<html>
+<head/>
+<body>
+<!-- IMAGE BEGINS HERE -->
+...
+ping 10.108.156.139
+PING 10.108.156.139 (10.108.156.139): 56 data bytes
+^C
+--- 10.108.156.139 ping statistics ---
+2 packets transmitted, 0 packets received, 100% packet loss
+# arp -an
+? (10.0.2.2) at 52:55:0a:00:02:02 [ether]  on eth0
+? (10.0.2.3) at 52:55:0a:00:02:03 [ether]  on eth0
+? (172.17.0.2) at 02:42:ac:11:00:02 [ether]  on docker0
+? (172.17.0.3) at 02:42:ac:11:00:03 [ether]  on docker0
+? (172.17.0.6) at 02:42:ac:11:00:06 [ether]  on docker0
+? (172.17.0.7) at 02:42:ac:11:00:07 [ether]  on docker0
+? (172.17.0.4) at 02:42:ac:11:00:04 [ether]  on docker0
+? (172.17.0.5) at 02:42:ac:11:00:05 [ether]  on docker0
+? (172.17.0.8) at 02:42:ac:11:00:08 [ether]  on docker0
+# ip addr show
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 52:54:00:12:34:56 brd ff:ff:ff:ff:ff:ff
+    inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic eth0
+       valid_lft 83384sec preferred_lft 83384sec
+3: sit0@NONE: <NOARP> mtu 1480 qdisc noop state DOWN group default qlen 1000
+    link/sit 0.0.0.0 brd 0.0.0.0
+4: docker0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
+    link/ether 02:42:f1:01:0b:ef brd ff:ff:ff:ff:ff:ff
+    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+       valid_lft forever preferred_lft forever
+6: veth2418776@if5: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP group default
+    link/ether da:a7:16:1b:ff:1d brd ff:ff:ff:ff:ff:ff link-netnsid 0
+38: vetha3f60ee@if37: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP group default
+    link/ether 76:27:9d:0c:5b:b8 brd ff:ff:ff:ff:ff:ff link-netnsid 3
+40: vethb993086@if39: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP group default
+    link/ether fe:81:54:91:35:34 brd ff:ff:ff:ff:ff:ff link-netnsid 1
+42: veth3157943@if41: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP group default
+    link/ether 9e:aa:fc:8e:bc:eb brd ff:ff:ff:ff:ff:ff link-netnsid 2
+
+iptables --list -nv -t nat | grep 10.108.156.139
+    1    60 KUBE-SVC-6CZTMAROCN3AQODZ  tcp  --  *      *       0.0.0.0/0            10.108.156.139       /* default/web-svc-cip cluster IP */ tcp dpt:80
+    1    60 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.108.156.139       /* default/web-svc-cip cluster IP */ tcp dpt:80
+
+~~~
+> [Kubernetes Services and Iptables](https://msazure.club/kubernetes-services-and-iptables/)
+
+### 4. Включен IPVS
+
+> При запуске нового инстанса Minikube лучше использовать ключ `--extra-config` и сразу указать, что мы хотим IPVS
+
+Включение его "наживую".
+~~~bash
+minikube dashboard
+~~~
+далее надо выбрать namespace kube-system , Configs and Storage/Config Maps и добавить параметры
+~~~yaml
+   ipvs:
+      strictARP: true
+...
+    mode: "ipvs"
+...
+~~~
+
+Теперь удалим Pod с kube-proxy , чтобы применить новую конфигурацию (он входит в DaemonSet и будет запущен автоматически)
+~~~bash
+kubectl --namespace kube-system delete pod --selector='k8s-app=kube-proxy'
+~~~
+
+<details>
+iptables --list -nv -t nat
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+  125  7798 KUBE-SERVICES  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service portals */
+   10   436 DOCKER     all  --  *      *       0.0.0.0/0            0.0.0.0/0            ADDRTYPE match dst-type LOCAL
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain OUTPUT (policy ACCEPT 23 packets, 1380 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+ 7405  446K KUBE-SERVICES  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service portals */
+ 3790  227K DOCKER     all  --  *      *       0.0.0.0/0           !127.0.0.0/8          ADDRTYPE match dst-type LOCAL
+
+Chain POSTROUTING (policy ACCEPT 23 packets, 1380 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+ 7792  469K KUBE-POSTROUTING  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes postrouting rules */
+   44  2746 MASQUERADE  all  --  *      !docker0  172.17.0.0/16        0.0.0.0/0
+
+Chain DOCKER (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 RETURN     all  --  docker0 *       0.0.0.0/0            0.0.0.0/0
+
+Chain KUBE-FIREWALL (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-DROP  all  --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain KUBE-KUBELET-CANARY (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-LOAD-BALANCER (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain KUBE-MARK-DROP (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK or 0x8000
+
+Chain KUBE-MARK-MASQ (18 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK or 0x4000
+
+Chain KUBE-NODE-PORT (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-NODEPORTS (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-POSTROUTING (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MASQUERADE  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* Kubernetes endpoints dst ip:port, source ip for solving hairpin purpose */ match-set KUBE-LOOP-BACK dst,dst,src
+   23  1380 RETURN     all  --  *      *       0.0.0.0/0            0.0.0.0/0            mark match ! 0x4000/0x4000
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK xor 0x4000
+    0     0 MASQUERADE  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service traffic requiring SNAT */ random-fully
+
+Chain KUBE-PROXY-CANARY (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-SEP-2AMR4GNIYH7ZRQLQ (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       10.0.2.15            0.0.0.0/0            /* default/kubernetes:https */
+    1    60 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/kubernetes:https */ tcp to:10.0.2.15:8443
+
+Chain KUBE-SEP-6MN6ED2K4BCMMMZ5 (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.7           0.0.0.0/0            /* kubernetes-dashboard/kubernetes-dashboard */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes-dashboard/kubernetes-dashboard */ tcp to:172.17.0.7:9090
+
+Chain KUBE-SEP-7PPXA5JT5ALVQPIV (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.2           0.0.0.0/0            /* kube-system/kube-dns:dns-tcp */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:dns-tcp */ tcp to:172.17.0.2:53
+
+Chain KUBE-SEP-AM3D3NYQOBPRLWTY (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.4           0.0.0.0/0            /* kubernetes-dashboard/dashboard-metrics-scraper */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes-dashboard/dashboard-metrics-scraper */ tcp to:172.17.0.4:8000
+
+Chain KUBE-SEP-C5Q7WHV7ALQOOLAZ (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.5           0.0.0.0/0            /* default/web-svc-cip */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip */ tcp to:172.17.0.5:8000
+
+Chain KUBE-SEP-DSL7LUEVWMEJDZFH (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.2           0.0.0.0/0            /* kube-system/kube-dns:metrics */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:metrics */ tcp to:172.17.0.2:9153
+
+Chain KUBE-SEP-R7GFZ2Y4ZSCTFIRE (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.3           0.0.0.0/0            /* default/web-svc-cip */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip */ tcp to:172.17.0.3:8000
+
+Chain KUBE-SEP-SLOPQOZW34M3DWKM (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.6           0.0.0.0/0            /* default/web-svc-cip */
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip */ tcp to:172.17.0.6:8000
+
+Chain KUBE-SEP-SNPTLXDNVSPZ5ND2 (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       172.17.0.2           0.0.0.0/0            /* kube-system/kube-dns:dns */
+    0     0 DNAT       udp  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:dns */ udp to:172.17.0.2:53
+
+Chain KUBE-SERVICES (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *      !10.244.0.0/16        0.0.0.0/0            /* Kubernetes service cluster ip + port for masquerade purpose */ match-set KUBE-CLUSTER-IP dst,dst
+   13   780 KUBE-NODE-PORT  all  --  *      *       0.0.0.0/0            0.0.0.0/0            ADDRTYPE match dst-type LOCAL
+    0     0 ACCEPT     all  --  *      *       0.0.0.0/0            0.0.0.0/0            match-set KUBE-CLUSTER-IP dst,dst
+
+Chain KUBE-SVC-6CZTMAROCN3AQODZ (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.108.156.139       /* default/web-svc-cip cluster IP */ tcp dpt:80
+    0     0 KUBE-SEP-R7GFZ2Y4ZSCTFIRE  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip -> 172.17.0.3:8000 */ statistic mode random probability 0.33333333349
+    0     0 KUBE-SEP-C5Q7WHV7ALQOOLAZ  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip -> 172.17.0.5:8000 */ statistic mode random probability 0.50000000000
+    0     0 KUBE-SEP-SLOPQOZW34M3DWKM  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/web-svc-cip -> 172.17.0.6:8000 */
+
+Chain KUBE-SVC-CEZPIJSAUFW5MYPQ (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.108.202.82        /* kubernetes-dashboard/kubernetes-dashboard cluster IP */ tcp dpt:80
+    0     0 KUBE-SEP-6MN6ED2K4BCMMMZ5  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes-dashboard/kubernetes-dashboard -> 172.17.0.7:9090 */
+
+Chain KUBE-SVC-ERIFXISQEP7F7OF4 (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.96.0.10           /* kube-system/kube-dns:dns-tcp cluster IP */ tcp dpt:53
+    0     0 KUBE-SEP-7PPXA5JT5ALVQPIV  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:dns-tcp -> 172.17.0.2:53 */
+
+Chain KUBE-SVC-JD5MR3NA4I4DYORP (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.96.0.10           /* kube-system/kube-dns:metrics cluster IP */ tcp dpt:9153
+    0     0 KUBE-SEP-DSL7LUEVWMEJDZFH  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:metrics -> 172.17.0.2:9153 */
+
+Chain KUBE-SVC-NPX46M4PTMTKRN6Y (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    1    60 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.96.0.1            /* default/kubernetes:https cluster IP */ tcp dpt:443
+    1    60 KUBE-SEP-2AMR4GNIYH7ZRQLQ  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* default/kubernetes:https -> 10.0.2.15:8443 */
+
+Chain KUBE-SVC-TCOU7JCQXEZGVUNU (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  udp  --  *      *      !10.244.0.0/16        10.96.0.10           /* kube-system/kube-dns:dns cluster IP */ udp dpt:53
+    0     0 KUBE-SEP-SNPTLXDNVSPZ5ND2  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kube-system/kube-dns:dns -> 172.17.0.2:53 */
+
+Chain KUBE-SVC-Z6GDYMWE5TV2NNJN (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  tcp  --  *      *      !10.244.0.0/16        10.107.160.33        /* kubernetes-dashboard/dashboard-metrics-scraper cluster IP */ tcp dpt:8000
+    0     0 KUBE-SEP-AM3D3NYQOBPRLWTY  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes-dashboard/dashboard-metrics-scraper -> 172.17.0.4:8000 */
+</details>
+
+Что-то поменялось, но старые цепочки на месте (хотя у них теперь 0 references) 😕
+kube-proxy настроил все по-новому, но не удалил мусор
+Запуск kube-proxy --cleanup в нужном поде - тоже не помогает
+
+~~~bash
+kubectl --namespace kube-system exec kube-proxy-<POD> kube-proxy --cleanup
+~~~
+
+Полностью очистим все правила iptables:
+- Создадим в ВМ с Minikube файл `/tmp/iptables.cleanup`
+~~~bash
+*nat
+-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+COMMIT
+*filter
+COMMIT
+*mangle
+COMMIT
+ ~~~
+
+- Применим конфигурацию: `iptables-restore /tmp/iptables.cleanup` и ждем 30 секунд
+
+- `iptables --list -nv -t nat`
+<details>
+ptables --list -nv -t nat
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-SERVICES  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service portals */
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain OUTPUT (policy ACCEPT 64 packets, 3840 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+ 1162 69720 KUBE-SERVICES  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service portals */
+
+Chain POSTROUTING (policy ACCEPT 64 packets, 3840 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+ 1172 70320 KUBE-POSTROUTING  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes postrouting rules */
+    0     0 MASQUERADE  all  --  *      !docker0  172.17.0.0/16        0.0.0.0/0
+
+Chain KUBE-FIREWALL (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-DROP  all  --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain KUBE-KUBELET-CANARY (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-LOAD-BALANCER (0 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain KUBE-MARK-DROP (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK or 0x8000
+
+Chain KUBE-MARK-MASQ (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK or 0x4000
+
+Chain KUBE-NODE-PORT (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain KUBE-POSTROUTING (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 MASQUERADE  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* Kubernetes endpoints dst ip:port, source ip for solving hairpin purpose */ match-set KUBE-LOOP-BACK dst,dst,src
+   64  3840 RETURN     all  --  *      *       0.0.0.0/0            0.0.0.0/0            mark match ! 0x4000/0x4000
+    0     0 MARK       all  --  *      *       0.0.0.0/0            0.0.0.0/0            MARK xor 0x4000
+    0     0 MASQUERADE  all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* kubernetes service traffic requiring SNAT */ random-fully
+
+Chain KUBE-SERVICES (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 KUBE-MARK-MASQ  all  --  *      *      !10.244.0.0/16        0.0.0.0/0            /* Kubernetes service cluster ip + port for masquerade purpose */ match-set KUBE-CLUSTER-IP dst,dst
+   36  2160 KUBE-NODE-PORT  all  --  *      *       0.0.0.0/0            0.0.0.0/0            ADDRTYPE match dst-type LOCAL
+    0     0 ACCEPT     all  --  *      *       0.0.0.0/0            0.0.0.0/0            match-set KUBE-CLUSTER-IP dst,dst
+</details>
+
+Итак, лишние правила удалены и мы видим только актуальную конфигурацию
+> `kube-proxy` периодически делает полную синхронизацию правил в своих цепочках
+
+Посмотрим конфигурацию IPVS:
+~~~bash
+toolbox
+Trying to pull docker.io/library/fedora:latest...
+Getting image source signatures
+Copying blob e1deda52ffad done
+Copying config 98ffdbffd2 done
+Writing manifest to image destination
+Storing signatures
+696e49f70d764f746e3b99045d2b57159f9e5f6a1d3407f4dd3debc1a7b0e91e
+696e49f70d764f746e3b99045d2b57159f9e5f6a1d3407f4dd3debc1a7b0e91e
+Untagged: docker.io/library/fedora:latest
+Deleted: 98ffdbffd20736862c8955419ef7db69849d715131717697007c3e51f22915a5
+Spawning container root-fedora-latest on /var/lib/toolbox/root-fedora-latest.
+Press ^] three times within 1s to kill container.
+
+dnf install -y ipvsadm && dnf clean all
+ipvsadm --list -n
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  10.96.0.1:443 rr
+  -> 10.0.2.15:8443               Masq    1      0          0
+TCP  10.96.0.10:53 rr
+  -> 172.17.0.2:53                Masq    1      0          0
+TCP  10.96.0.10:9153 rr
+  -> 172.17.0.2:9153              Masq    1      0          0
+TCP  10.107.160.33:8000 rr
+  -> 172.17.0.4:8000              Masq    1      0          0
+TCP  10.108.156.139:80 rr
+  -> 172.17.0.3:8000              Masq    1      0          0
+  -> 172.17.0.5:8000              Masq    1      0          0
+  -> 172.17.0.6:8000              Masq    1      0          0
+TCP  10.108.202.82:80 rr
+  -> 172.17.0.7:9090              Masq    1      0          0
+UDP  10.96.0.10:53 rr
+  -> 172.17.0.2:53                Masq    1      0          0
+
+Press ^] three times within 1s to kill container.
+Container root-fedora-latest terminated by signal KILL.
+
+ping  -c1 10.108.156.139
+PING 10.108.156.139 (10.108.156.139): 56 data bytes
+64 bytes from 10.108.156.139: seq=0 ttl=64 time=0.167 ms
+
+--- 10.108.156.139 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.167/0.167/0.167 ms
+
+### Итак, все работает. Но почему пингуется виртуальный IP?
+### Все просто - он уже не такой виртуальный. Этот IP теперь есть на
+### интерфейсе kube-ipvs0 :
+
+ip addr show kube-ipvs0
+47: kube-ipvs0: <BROADCAST,NOARP> mtu 1500 qdisc noop state DOWN group default
+    link/ether fa:76:3a:a2:89:90 brd ff:ff:ff:ff:ff:ff
+    inet 10.107.160.33/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+    inet 10.96.0.1/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+    inet 10.96.0.10/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+    inet 10.108.156.139/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+    inet 10.108.202.82/32 scope global kube-ipvs0
+       valid_lft forever preferred_lft forever
+~~~
+## Работа с LoadBalancer и Ingress
+### 5. Установка MetalLB
+
+MetalLB позволяет запустить внутри кластера L4-балансировщик, который будет принимать извне запросы к сервисам и раскидывать их
+между подами.
+Установка:
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/metallb.yaml
+kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+~~~
+
+Проверка:
+~~~bash
+kubectl --namespace metallb-system get all
+
+NAME                              READY   STATUS    RESTARTS   AGE
+pod/controller-7696f658c8-wqzcm   1/1     Running   0          93s
+pod/speaker-tvcwh                 1/1     Running   0          93s
+
+NAME                     DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR                 AGE
+daemonset.apps/speaker   1         1         1       1            1           beta.kubernetes.io/os=linux   93s
+
+NAME                         READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/controller   1/1     1            1           93s
+
+NAME                                    DESIRED   CURRENT   READY   AGE
+replicaset.apps/controller-7696f658c8   1         1         1       93s
+~~~
+
+Теперь настроим балансировщик с помощью `ConfigMap`
+
+Создадим манифест [metallb-config.yaml](kubernetes-networks/metallb-config.yaml)
+
+В конфигурации мы настраиваем:
+- Режим L2 (анонс адресов балансировщиков с помощью ARP)
+- Создаем пул адресов 172.17.255.1 - 172.17.255.255 - они будут назначаться сервисам с типом `LoadBalancer`
+
+Применяем:
+~~~bash
+kubectl apply -f metallb-config.yaml
+configmap/config created
+~~~
+
+Сделаем копию файла `web-svc-cip.yaml` в `web-svc-lb.yaml` и изменим имя сервиса и его тип на `LoadBalancer`
+~~~bash
+kubectl apply -f web-svc-lb.yaml
+service/web-svc-lb created
+~~~
+
+Теперь посмотрим логи пода-контроллера MetalLB
+~~~bash
+kubectl get pods -n metallb-system
+NAME                          READY   STATUS    RESTARTS   AGE
+controller-7696f658c8-wqzcm   1/1     Running   0          12m
+speaker-tvcwh                 1/1     Running   0          12m
+
+kubectl --namespace metallb-system logs pod/controller-7696f658c8-wqzcm
+...
+{"caller":"service.go:114","event":"ipAllocated","ip":"172.17.255.1","msg":"IP address assigned by controller","service":"default/web-svc-lb","ts":"2022-07-25T18:14:58.840882965Z"}
+...
+kubectl describe svc web-svc-lb
+
+kubectl describe svc web-svc-lb
+Name:                     web-svc-lb
+Namespace:                default
+Labels:                   <none>
+Annotations:              <none>
+Selector:                 app=web
+Type:                     LoadBalancer
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.101.76.41
+IPs:                      10.101.76.41
+LoadBalancer Ingress:     172.17.255.1
+Port:                     <unset>  80/TCP
+TargetPort:               8000/TCP
+NodePort:                 <unset>  30761/TCP
+Endpoints:                172.17.0.4:8000,172.17.0.5:8000,172.17.0.6:8000
+Session Affinity:         None
+External Traffic Policy:  Cluster
+Events:                   <none>
+~~~
+
+### MetalLB | Проверка конфигурации
+
+#### Настроим route
+~~~bash
+minikube ssh
+ip addr show eth0
+12: eth0@if13: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
+    link/ether 02:42:c0:a8:31:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 192.168.49.2/24 brd 192.168.49.255 scope global eth0
+       valid_lft forever preferred_lft forever
+docker@minikube:~$ exit
+logout
+sudo ip route add 172.17.255.0/24 via 192.168.49.2
+~~~
+
+![1.png](kubernetes-networks/png/1.png)
+
+Задание со ⭐️⭐️ | DNS через MetalLB
+
+Сделаем сервис 'LoadBalancer' ( [core-dns.yaml](kubernetes-networks/coredns/core-dns.yaml) ), который откроет доступ к CoreDNS снаружи кластера (позволит получать записи через внешний IP)
+
+> Hint [https://metallb.universe.tf/usage/](https://metallb.universe.tf/usage/). IP Address Sharing
+
+~~~bash
+cd ./coredns
+kubectl apply -f core-dns.yaml
+kubectl get service -n kube-system
+NAME               TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)                  AGE
+external-dns-tcp   LoadBalancer   10.96.119.156   172.17.255.10   53:31626/TCP             27m
+external-dns-udp   LoadBalancer   10.106.78.118   172.17.255.10   53:30111/UDP             27m
+kube-dns           ClusterIP      10.96.0.10      <none>          53/UDP,53/TCP,9153/TCP   61m
+
+nslookup web-svc-lb.default.svc.cluster.local 172.17.255.10
+Server:         172.17.255.10
+Address:        172.17.255.10#53
+
+Name:   web-svc-lb.default.svc.cluster.local
+Address: 10.101.76.41
+~~~
+
+### 6. Создание Ingress
+
+Установка начинается с основного манифеста:
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/provider/baremetal/deploy.yaml
+namespace/ingress-nginx created
+serviceaccount/ingress-nginx created
+serviceaccount/ingress-nginx-admission created
+role.rbac.authorization.k8s.io/ingress-nginx created
+role.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrole.rbac.authorization.k8s.io/ingress-nginx created
+clusterrole.rbac.authorization.k8s.io/ingress-nginx-admission created
+rolebinding.rbac.authorization.k8s.io/ingress-nginx created
+rolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx created
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+configmap/ingress-nginx-controller created
+service/ingress-nginx-controller created
+service/ingress-nginx-controller-admission created
+deployment.apps/ingress-nginx-controller created
+job.batch/ingress-nginx-admission-create created
+job.batch/ingress-nginx-admission-patch created
+ingressclass.networking.k8s.io/nginx created
+validatingwebhookconfiguration.admissionregistration.k8s.io/ingress-nginx-admission created
+~~~
+
+> Варианты установки
+> https://kubernetes.github.io/ingress-nginx/deploy/#bare-metal
+> Можно сделать просто 'minikube addons enable ingress'
+
+Создадим файл [nginx-lb.yaml](kubernetes-networks/nginx-lb.yaml) c конфигурацией `LoadBalancer` - сервиса
+~~~bash
+kubectl get services -A
+NAMESPACE       NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                      AGE
+default         kubernetes                           ClusterIP      10.96.0.1        <none>          443/TCP                      96m
+default         web-svc-lb                           LoadBalancer   10.101.76.41     172.17.255.1    80:30761/TCP                 83m
+ingress-nginx   ingress-nginx                        LoadBalancer   10.110.133.182   172.17.255.2    80:30240/TCP,443:30635/TCP   85s
+ingress-nginx   ingress-nginx-controller             NodePort       10.108.110.80    <none>          80:31215/TCP,443:32669/TCP   6m29s
+ingress-nginx   ingress-nginx-controller-admission   ClusterIP      10.105.110.208   <none>          443/TCP                      6m29s
+kube-system     dns-service-tcp                      LoadBalancer   10.98.115.134    <pending>       53:31960/TCP                 34m
+kube-system     dns-service-udp                      LoadBalancer   10.103.189.20    <pending>       53:32697/UDP                 34m
+kube-system     external-dns-tcp                     LoadBalancer   10.96.119.156    172.17.255.10   53:31626/TCP                 63m
+kube-system     external-dns-udp                     LoadBalancer   10.106.78.118    172.17.255.10   53:30111/UDP                 63m
+kube-system     kube-dns                             ClusterIP      10.96.0.10       <none>          53/UDP,53/TCP,9153/TCP       96m
+
+curl http://172.17.255.2
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+~~~
+
+### Подключение приложение Web к Ingress
+
+Наш Ingress-контроллер не требует ClusterIP для балансировки трафика
+Список узлов для балансировки заполняется из ресурса Endpoints нужного сервиса (это нужно для "интеллектуальной" балансировки,
+привязки сессий и т.п.)
+Поэтому мы можем использовать headless-сервис для нашего вебприложения.
+Скопируем `web-svc-cip.yaml` в `web-svc-headless.yaml` изменим имя сервиса на `web-svc`, добавим параметр `clusterIP: None`
+
+Применим полученный манифест и проверим, что `ClusterIP` для сервиса `web-svc` действительно не назначен
+~~~bash
+kubectl apply -f web-svc-headless.yaml
+kubectl get services -A | grep web-svc
+default         web-svc                              ClusterIP      None             <none>          80/TCP                       30s
+default         web-svc-lb                           LoadBalancer   10.101.76.41     172.17.255.1    80:30761/TCP                 90m
+~~~
+
+### Создание правил Ingress
+
+Теперь настроим наш ingress-прокси, создав манифест с ресурсом `Ingress` (файл [web-ingress.yaml](kubernetes-networks/web-ingress.yaml) ):
+Применим манифест и проверим, что корректно заполнены `Address` и `Backends`
+~~~bash
+kubectl apply -f web-ingress.yaml
+ingress.networking.k8s.io/web created
+
+kubectl describe ingress/web
+Labels:           <none>
+Namespace:        default
+Address:          192.168.49.2
+Ingress Class:    nginx
+Default backend:  <default>
+Rules:
+  Host        Path  Backends
+  ----        ----  --------
+  *
+              /web   web-svc:8000 (172.17.0.4:8000,172.17.0.5:8000,172.17.0.6:8000)
+Annotations:  nginx.ingress.kubernetes.io/rewrite-target: /
+Events:
+  Type    Reason  Age                From                      Message
+  ----    ------  ----               ----                      -------
+  Normal  Sync    84s (x2 over 94s)  nginx-ingress-controller  Scheduled for sync
+
+curl http://172.17.255.2/web/index.html
+<html>
+<head/>
+<body>
+<!-- IMAGE BEGINS HERE -->
+<font size="-3">
+...
+~~~
+
+### Задания со ⭐️⭐️ | Ingress для Dashboard
+
+Добавим доступ к `kubernetes-dashboard` через наш Ingress-прокси:
+Cервис должен быть доступен через префикс `/dashboard.`
+> Kubernetes Dashboard должен быть развернут из официального манифеста.
+> Актуальная ссылка есть в https://github.com/kubernetes/dashboard
+
+Написанные вами манифесты положим в подкаталог `./dashboard`:
+
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.6.0/aio/deploy/recommended.yaml
+cd ./dashboard
+kubectl apply -f dashboard-ingress.yaml
+curl -k https://172.17.255.2/dashboard/
+<!--
+Copyright 2017 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+  ...
+~~~
+
+### Задания со ⭐️⭐️ | Canary для Ingress
+Реализуем канареечное развертывание с помощью ingress-nginx :
+Перенаправление части трафика на выделенную группу подов должно
+происходить по HTTP-заголовку.
+> Документация: [https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md#canary](https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md#canary)
+
+Естественно, что вам понадобятся 1-2 "канареечных" пода.
+Написанные манифесты положите в подкаталог ./canary
+
+> TODO
 
 
 # **Полезное:**
+[Kubernetes Services and Iptables](https://msazure.club/kubernetes-services-and-iptables/)
 
 </details>
