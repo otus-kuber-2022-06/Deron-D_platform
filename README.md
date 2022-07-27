@@ -3568,6 +3568,43 @@ curl http://172.17.255.2/web/index.html
 ...
 ~~~
 
+### Задания со ⭐️⭐️ | Ingress для Dashboard
+
+Добавим доступ к `kubernetes-dashboard` через наш Ingress-прокси:
+Cервис должен быть доступен через префикс `/dashboard.`
+> Kubernetes Dashboard должен быть развернут из официального манифеста.
+> Актуальная ссылка есть в https://github.com/kubernetes/dashboard
+
+Написанные вами манифесты положим в подкаталог `./dashboard`:
+
+~~~bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.6.0/aio/deploy/recommended.yaml
+cd ./dashboard
+kubectl apply -f dashboard-ingress.yaml
+curl -k https://172.17.255.2/dashboard/
+<!--
+Copyright 2017 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+  ...
+~~~
+
+### Задания со ⭐️⭐️ | Canary для Ingress
+Реализуем канареечное развертывание с помощью ingress-nginx :
+Перенаправление части трафика на выделенную группу подов должно
+происходить по HTTP-заголовку.
+> Документация: [https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md#canary](https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md#canary)
+
+Естественно, что вам понадобятся 1-2 "канареечных" пода.
+Написанные манифесты положите в подкаталог ./canary
+
+> TODO
+
+
 # **Полезное:**
 [Kubernetes Services and Iptables](https://msazure.club/kubernetes-services-and-iptables/)
 
