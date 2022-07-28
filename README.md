@@ -3821,5 +3821,9 @@ Events:
   Normal  SuccessfulCreate  35m                  statefulset-controller  create Claim data-minio-0 Pod minio-0 in StatefulSet minio success
   Normal  SuccessfulDelete  3m37s                statefulset-controller  delete Pod minio-0 in StatefulSet minio successful
   Normal  SuccessfulCreate  3m35s (x2 over 35m)  statefulset-controller  create Pod minio-0 in StatefulSet minio successful
-
 ~~~
+
+# **Полезное:**
+
+
+</details>
