@@ -3609,3 +3609,221 @@ You may obtain a copy of the License at
 [Kubernetes Services and Iptables](https://msazure.club/kubernetes-services-and-iptables/)
 
 </details>
+
+# **Лекция №6: Хранение данных в Kubernetes: Volumes, Storages, Statefull-приложения // ДЗ**
+> _Volumes, Storages, StatefulSet_
+<details>
+  <summary>Volumes, Storages,StatefulSet</summary>
+
+## **Задание:**
+Домашнее задание
+
+Цель:
+В данном дз студенты научатся работать с volume, PV и PVC. Разберутся с жизненным циклом PV.
+
+Описание/Пошаговая инструкция выполнения домашнего задания:
+Все действия описаны в методическом указании.
+
+Критерии оценки:
+0 б. - задание не выполнено
+1 б. - задание выполнено
+2 б. - выполнены все дополнительные задания
+---
+
+## **Выполнено:**
+
+
+### 1. Установка и запуск kind
+> [Установка](https://kind.sigs.k8s.io/docs/user/quick-start#installation)
+Запуск
+~~~bash
+kind create cluster
+#export KUBECONFIG="$(kind get kubeconfig)"
+~~~
+
+### 2. Применение StatefulSet
+
+Закомитем конфигурацию под именем [minio-statefulset.yaml](kubernetes-volumes/minio-statefulset.yaml).
+
+~~~bash
+kubectl apply -f minio-statefulset.yaml
+statefulset.apps/minio created
+~~~
+
+В результате применения конфигурации должно произойти следующее:
+- Запуститься под с MinIO
+- Создаться PVC
+- Динамически создаться PV на этом PVC с помощью дефолотного StorageClass
+
+~~~bash
+kubectl get pods
+NAME      READY   STATUS    RESTARTS   AGE
+minio-0   1/1     Running   0          2m33s
+
+kubectl get statefulsets
+NAME    READY   AGE
+minio   1/1     4m34s
+
+kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                  STORAGECLASS   REASON   AGE
+pvc-76d0a02a-508a-43be-9cf9-e2114ab68068   10Gi       RWO            Delete           Bound    default/data-minio-0   standard                3m31s
+
+
+kubectl get pvc
+NAME           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-minio-0   Bound    pvc-76d0a02a-508a-43be-9cf9-e2114ab68068   10Gi       RWO            standard       3m6s
+
+kubectl describe  pv/pvc-76d0a02a-508a-43be-9cf9-e2114ab68068
+Name:              pvc-76d0a02a-508a-43be-9cf9-e2114ab68068
+Labels:            <none>
+Annotations:       pv.kubernetes.io/provisioned-by: rancher.io/local-path
+Finalizers:        [kubernetes.io/pv-protection]
+StorageClass:      standard
+Status:            Bound
+Claim:             default/data-minio-0
+Reclaim Policy:    Delete
+Access Modes:      RWO
+VolumeMode:        Filesystem
+Capacity:          10Gi
+Node Affinity:
+  Required Terms:
+    Term 0:        kubernetes.io/hostname in [kind-control-plane]
+Message:
+Source:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local-path-provisioner/pvc-76d0a02a-508a-43be-9cf9-e2114ab68068_default_data-minio-0
+    HostPathType:  DirectoryOrCreate
+Events:            <none>
+~~~
+
+## 3. Применение Headless Service
+
+Для того, чтобы наш StatefulSet был доступен изнутри кластера, создадим Headless Service.
+Закомитим конфигурацию под именем [minio-headlessservice.yaml](kubernetes-volumes/minio-headlessservice.yaml)
+
+~~~bash
+kubectl apply -f minio-headlessservice.yaml
+service/minio created
+~~~
+
+Проверка работы MinIO
+~~~bash
+wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+mv mc ~/bin/mc_cmd
+mc_cmd ls
+[2022-07-28 22:27:00 MSK]   181B minio-headlessservice.yaml
+[2022-07-28 22:13:21 MSK] 1.5KiB minio-statefulset.yaml
+~~~
+
+## Задание со ⭐️
+
+В конфигурации нашего StatefulSet данные указаны в открытом виде, что небезопасно.
+Поместим данные в 'secrets' и настроим конфигурацию на их использование
+
+"Зашифруем" для примера в base64
+~~~yaml
+        env:
+        - name: MINIO_ACCESS_KEY
+          value: "minio"
+        - name: MINIO_SECRET_KEY
+          value: "minio123"
+~~~
+
+~~~bash
+echo -n minio | base64
+bWluaW8=
+echo -n minio123 | base64
+bWluaW8xMjM=
+~~~
+
+Создадим [secrets-minio.yaml](kubernetes-volumes/secrets-minio.yaml)
+
+Применим
+~~~bash
+kubectl apply -f .
+service/minio unchanged
+statefulset.apps/minio configured
+secret/minio-secrets created
+
+kubectl get secret
+NAME            TYPE     DATA   AGE
+minio-secrets   Opaque   2      87s
+
+kubectl describe secret minio-secrets
+Name:         minio-secrets
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+minio-password:  8 bytes
+minio-username:  5 bytes
+
+kubectl get secret minio-secrets -o yaml
+apiVersion: v1
+data:
+  minio-password: bWluaW8xMjM=
+  minio-username: bWluaW8=
+kind: Secret
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"minio-password":"bWluaW8xMjM=","minio-username":"bWluaW8="},"kind":"Secret","metadata":{"annotations":{},"name":"minio-secrets","namespace":"default"},"type":"Opaque"}
+  creationTimestamp: "2022-07-28T19:50:08Z"
+  name: minio-secrets
+  namespace: default
+  resourceVersion: "2799"
+  uid: 95c5b4d8-9cdc-4356-8ed0-91fda57c5254
+type: Opaque
+
+kubectl describe statefulsets minio
+Name:               minio
+Namespace:          default
+CreationTimestamp:  Thu, 28 Jul 2022 22:18:28 +0300
+Selector:           app=minio
+Labels:             <none>
+Annotations:        <none>
+Replicas:           1 desired | 1 total
+Update Strategy:    RollingUpdate
+  Partition:        0
+Pods Status:        1 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:  app=minio
+  Containers:
+   minio:
+    Image:      minio/minio:RELEASE.2019-07-10T00-34-56Z
+    Port:       9000/TCP
+    Host Port:  0/TCP
+    Args:
+      server
+      /data
+    Liveness:  http-get http://:9000/minio/health/live delay=120s timeout=1s period=20s #success=1 #failure=3
+    Environment:
+      MINIO_ACCESS_KEY:  <set to the key 'minio-username' in secret 'minio-secrets'>  Optional: false
+      MINIO_SECRET_KEY:  <set to the key 'minio-password' in secret 'minio-secrets'>  Optional: false
+    Mounts:
+      /data from data (rw)
+  Volumes:  <none>
+Volume Claims:
+  Name:          data
+  StorageClass:
+  Labels:        <none>
+  Annotations:   <none>
+  Capacity:      10Gi
+  Access Modes:  [ReadWriteOnce]
+Events:
+  Type    Reason            Age                  From                    Message
+  ----    ------            ----                 ----                    -------
+  Normal  SuccessfulCreate  35m                  statefulset-controller  create Claim data-minio-0 Pod minio-0 in StatefulSet minio success
+  Normal  SuccessfulDelete  3m37s                statefulset-controller  delete Pod minio-0 in StatefulSet minio successful
+  Normal  SuccessfulCreate  3m35s (x2 over 35m)  statefulset-controller  create Pod minio-0 in StatefulSet minio successful
+~~~
+
+# **Полезное:**
+
+
+</details>
