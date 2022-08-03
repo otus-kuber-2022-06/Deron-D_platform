@@ -3825,5 +3825,48 @@ Events:
 
 # **Полезное:**
 
+</details>
+
+# **Лекция №7: Шаблонизация манифестов. Helm и его аналоги (Jsonnet, Kustomize) // ДЗ**
+> _Шаблонизация манифестов Kubernetes_
+<details>
+  <summary>kubernetes-templating</summary>
+
+## **Задание:**
+Шаблонизация манифестов приложения, использование Helm, kustomize, helmfile, jsonnet. Установка community Helm charts
+
+Цель:
+В данном дз студенты научатся использовать менеджер Helm3, научатся писать свои helm манифесты. Научатся управлять релизами при помощи helm.
+
+Описание/Пошаговая инструкция выполнения домашнего задания:
+Все действия описаны в методическом указании.
+
+Критерии оценки:
+0 б. - задание не выполнено
+1 б. - задание выполнено
+2 б. - выполнены все дополнительные задания
+---
+
+## **Выполнено:**
+
+### 1. Intro
+
+Поднимем кластер k8s
+~~~bash
+cd terraform-k8s/
+curl https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+terraform init
+terraform apply --auto-approve
+
+kubectl cluster-info
+Kubernetes control plane is running at https://51.250.2.182
+CoreDNS is running at https://51.250.2.182/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+Metrics-server is running at https://51.250.2.182/api/v1/namespaces/kube-system/services/https:metrics-server:/proxy
+
+To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'
+~~~
+
+
+# **Полезное:**
 
 </details>
