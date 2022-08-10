@@ -3853,7 +3853,7 @@ Events:
 
 Поднимем кластер k8s
 ~~~bash
-cd terraform-k8s/
+cd kubernetes-templating/terraform-k8s
 curl https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
 terraform init
 terraform apply --auto-approve
@@ -3865,6 +3865,268 @@ Metrics-server is running at https://51.250.2.182/api/v1/namespaces/kube-system/
 
 To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'
 ~~~
+
+#### Проверяем версию установленнного helm
+~~~bash
+helm version
+version.BuildInfo{Version:"v3.7.0", GitCommit:"eeac83883cb4014fe60267ec6373570374ce770b", GitTreeState:"clean", GoVersion:"go1.16.8"}
+~~~
+
+#### План по устанавке готовых Helm chartsсо следующими сервисами:
+- [nginx-ingress](https://github.com/helm/charts/tree/master/stable/nginx-ingress) - сервис, обеспечивающий доступ к публичным ресурсам кластера
+- [cert-manager](https://github.com/jetstack/cert-manager/tree/master/deploy/charts/cert-manager) - сервис, позволяющий динамически генерировать Let's Encrypt сертификаты для ingress ресурсов
+- [chartmuseum](https://github.com/helm/charts/tree/master/stable/chartmuseum) - специализированный репозиторий для хранения helm charts
+- [harbor](https://github.com/goharbor/harbor-helm) - хранилище артефактов общего назначения (Docker Registry),
+поддерживающее helm charts
+
+#### Памятка по использованию Helm
+> Создание release:
+~~~bash
+$ helm install <chart_name> --name=<release_name> --namespace=<namespace>
+$ kubectl get secrets -n <namespace> | grep <release_name>
+sh.helm.release.v1.<release_name>.v1 helm.sh/release.v1 1 115m
+~~~
+
+> Обновление release:
+~~~bash
+$ helm upgrade <release_name> <chart_name> --namespace=<namespace>
+$ kubectl get secrets -n <namespace> | grep <release_name>
+sh.helm.release.v1.<release_name>.v1 helm.sh/release.v1 1 115m
+sh.helm.release.v1.<release_name>.v2 helm.sh/release.v1 1 56m
+~~~
+
+> Создание или обновление release:
+~~~bash
+$ helm upgrade --install <release_name> <chart_name> --namespace=<namespace>
+$ kubectl get secrets -n <namespace> | grep <release_name>
+sh.helm.release.v1.<release_name>.v1 helm.sh/release.v1 1 115m
+sh.helm.release.v1.<release_name>.v2 helm.sh/release.v1 1 56m
+sh.helm.release.v1.<release_name>.v3 helm.sh/release.v1 1 5s
+~~~
+
+#### Add helm repo
+~~~bash
+helm repo add stable https://charts.helm.sh/stable
+"stable" has been added to your repositories
+➜  terraform-k8s git:(kubernetes-templating) ✗ helm repo list
+NAME            URL
+jetstack        https://charts.jetstack.io
+nginx-stable    https://helm.nginx.com/stable
+ingress-nginx   https://kubernetes.github.io/ingress-nginx
+stable          https://charts.helm.sh/stable
+~~~
+
+### 2. Nginx-ingress
+
+~~~bash
+kubectl create ns nginx-ingress
+
+helm upgrade --install nginx-ingress stable/nginx-ingress --wait \
+ --namespace=nginx-ingress \
+ --version=1.41.3
+
+*******************************************************************************************************
+* DEPRECATED, please use https://github.com/kubernetes/ingress-nginx/tree/master/charts/ingress-nginx *
+*******************************************************************************************************
+helm list --all-namespaces
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+nginx-ingress   nginx-ingress   1               2022-08-07 21:19:40.753373376 +0300 MSK deployed        nginx-ingress-1.41.3    v0.34.1
+
+helm uninstall nginx-ingress --namespace=nginx-ingress
+
+helm repo update
+
+helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --wait \
+--namespace=nginx-ingress
+~~~
+
+### 3. Cert-manager
+
+~~~bash
+#Install CustomResourceDefinitions
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.9.1/cert-manager.crds.yaml
+
+helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.9.1 \
+  --set prometheus.enabled=false \
+  --set webhook.timeoutSeconds=4
+
+helm list --all-namespaces
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+cert-manager    cert-manager    1               2022-08-07 22:14:46.077536991 +0300 MSK deployed        cert-manager-v1.9.1     v1.9.1
+nginx-ingress   nginx-ingress   1               2022-08-07 21:46:36.562052506 +0300 MSK deployed        ingress-nginx-4.2.0     1.3.0
+
+kubectl --namespace nginx-ingress get services -o wide
+NAME                            TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)                      AGE     SELECTOR
+nginx-ingress-controller        LoadBalancer   10.96.186.16    51.250.83.159   80:30746/TCP,443:30018/TCP   5m36s   app.kubernetes.io/component=controller,app=nginx-ingress,release=nginx-ingress
+nginx-ingress-default-backend   ClusterIP      10.96.171.150   <none>          80/TCP                       5m36s   app.kubernetes.io/component=default-backend,app=nginx-ingress,release=nginx-ingress
+~~~
+
+###  4. chartmuseum
+
+Создадим файл `values.yaml` для chartmuseum
+~~~yaml
+---
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    kubernetes.io/tls-acme: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/acme-challenge-type: http01
+  hosts:
+    - name: chartmuseum.51.250.83.159.nip.io
+      path: /
+      tls: true
+      tlsSecret: chartmuseum.51.250.83.159.nip.io
+env:
+  open:
+    DISABLE_API: false
+~~~
+
+Запустим установку `chartmuseum`
+~~~bash
+kubectl create ns chartmuseum
+
+kubectl apply -f cert-manager/acme-issuer.yaml
+
+helm upgrade --install chartmuseum stable/chartmuseum --wait \
+ --namespace=chartmuseum \
+ --version=2.13.2 \
+ -f chartmuseum/values.yaml
+
+kubectl get secrets -n chartmuseum
+NAME                                     TYPE                                  DATA   AGE
+chartmuseum-chartmuseum                  Opaque                                0      15s
+chartmuseum.51.250.83.159.nip.io-2dgn6   Opaque                                1      14s
+default-token-ms66c                      kubernetes.io/service-account-token   3      117s
+sh.helm.release.v1.chartmuseum.v1        helm.sh/release.v1                    1      15s
+~~~
+
+Проверим, что `release chartmuseum` установился:
+~~~bash
+helm ls -n chartmuseum
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+chartmuseum     chartmuseum     1               2022-08-10 20:46:48.448288832 +0300 MSK deployed        chartmuseum-2.13.2      0.12.0
+~~~
+
+Helm 3 хранит информацию в `secrets`
+~~~bash
+kubectl get secrets -n chartmuseum
+
+NAME                                TYPE                                  DATA   AGE
+chartmuseum-chartmuseum             Opaque                                0      19m
+chartmuseum.51.250.83.159.nip.io    kubernetes.io/tls                     2      18m
+default-token-ms66c                 kubernetes.io/service-account-token   3      20m
+sh.helm.release.v1.chartmuseum.v1   helm.sh/release.v1                    1      19m
+~~~
+
+Проверяем установку в соответствии с критериями:
+- Chartmuseum доступен по URL [https://chartmuseum.51.250.83.159.nip.io/](https://chartmuseum.51.250.83.159.nip.io/)
+- Сертификат для данного URL валиден
+![1.jpg](kubernetes-templating/chartmuseum/1.jpg)
+
+###  5. harbor
+
+Установка
+
+~~~bash
+helm repo add harbor https://helm.goharbor.io
+
+kubectl create ns harbor
+cd kubernetes-templating/harbor/values.yaml
+wget https://raw.githubusercontent.com/goharbor/harbor-helm/master/values.yaml
+cd ..
+~~~
+
+Правим `harbor/values.yaml` в части 'ingress'
+expose:
+  type: ingress
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-ingress-tls
+  ingress:
+    hosts:
+      core: harbor.51.250.83.159.nip.io
+    controller: nginx
+    annotations:
+      kubernetes.io/tls-acme: "true"
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      cert-manage.io/acme-challenge-type: http01
+      kubernetes.io/ingress.class: nginx
+externalURL: https://harbor.51.250.83.159.nip.io/
+
+notary:
+  enabled: false
+~~~diff
+diff values.yaml values.yaml.orig
+19,20c19,20
+<     certSource: secret
+<     #auto:
+---
+>     certSource: auto
+>     auto:
+28c28
+<       secretName: "harbor-ingress-tls"
+---
+>       secretName: ""
+36,37c36,37
+<       core: harbor.51.250.83.159.nip.io
+<       #notary: notary.harbor.domain
+---
+>       core: core.harbor.domain
+>       notary: notary.harbor.domain
+43c43
+<     controller: nginx
+---
+>     controller: default
+54,56d53
+<       cert-manager.io/cluster-issuer: letsencrypt-prod
+<       cert-manage.io/acme-challenge-type: http01
+<       kubernetes.io/ingress.class: nginx
+58d54
+<       enabled: false
+130c126
+< externalURL: https://harbor.51.250.83.159.nip.io/
+---
+> externalURL: https://core.harbor.domain
+~~~
+
+~~~
+helm upgrade --install harbor harbor/harbor --wait --namespace=harbor --version=1.1.2 -f ./harbor/values.yaml
+W0810 22:13:07.205174   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
+W0810 22:13:07.226829   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
+W0810 22:13:07.272692   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
+Error: UPGRADE FAILED: Get "https://51.250.93.64/apis/apps/v1/namespaces/harbor/deployments/harbor-harbor-clair": context deadline exceeded
+
+helm ls -n harbor
+NAME    NAMESPACE       REVISION        UPDATED                                 STATUS  CHART           APP VERSION
+harbor  harbor          3               2022-08-10 22:13:03.828296928 +0300 MSK failed  harbor-1.1.2    1.8.2
+
+kubectl get secrets -n harbor -l owner=helm
+NAME                           TYPE                 DATA   AGE
+sh.helm.release.v1.harbor.v1   helm.sh/release.v1   1      3m20s
+
+<!-- helm uninstall harbor -n harbor
+W0810 22:24:31.872440   64453 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
+These resources were kept due to the resource policy:
+[PersistentVolumeClaim] harbor-harbor-chartmuseum
+[PersistentVolumeClaim] harbor-harbor-jobservice
+[PersistentVolumeClaim] harbor-harbor-registry
+
+release "harbor" uninstalled -->
+~~~
+
+Деплой сваливается с ошибкой, возможно из-за `Prerequisites Kubernetes cluster 1.20+`, но открывается
+
+![2.png](kubernetes-templating/harbor/2.png)
+
+
 
 
 # **Полезное:**

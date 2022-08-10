@@ -48,19 +48,19 @@ variable service_account_id {
 }
 variable cores {
   description = "VM cores"
-  default     = 4
+  default     = 2
 }
 variable memory {
   description = "VM memory"
-  default     = 8
+  default     = 4
 }
 variable disk {
   description = "Disk size"
-  default     = 64
+  default     = 30
 }
 variable count_of_workers {
   description = "count_of_workers"
-  default     = 2
+  default     = 1
 }
 variable cluster_name {
   description = "k8s cluster name"

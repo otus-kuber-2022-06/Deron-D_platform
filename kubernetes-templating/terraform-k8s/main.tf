@@ -21,7 +21,7 @@ resource "yandex_kubernetes_cluster" "k8s-cluster" {
   network_id = var.network_id
 
   master {
-    version = "1.19"
+    version = "1.21"
     zonal {
       zone      = var.zone
       subnet_id = var.subnet_id
@@ -38,7 +38,7 @@ resource "yandex_kubernetes_cluster" "k8s-cluster" {
 
 resource "yandex_kubernetes_node_group" "k8s-node" {
   cluster_id = yandex_kubernetes_cluster.k8s-cluster.id
-  version    = "1.19"
+  version    = "1.21"
   name       = "k8s-node"
 
   instance_template {
