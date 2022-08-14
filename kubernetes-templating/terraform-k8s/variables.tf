@@ -48,15 +48,15 @@ variable service_account_id {
 }
 variable cores {
   description = "VM cores"
-  default     = 2
+  default     = 4
 }
 variable memory {
   description = "VM memory"
-  default     = 4
+  default     = 8
 }
 variable disk {
   description = "Disk size"
-  default     = 30
+  default     = 32
 }
 variable count_of_workers {
   description = "count_of_workers"

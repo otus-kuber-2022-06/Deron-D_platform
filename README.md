@@ -3940,6 +3940,17 @@ helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --wait \
 --namespace=nginx-ingress
 ~~~
 
+~~~bash
+# From https://docs.nginx.com/nginx-ingress-controller/installation/installation-with-helm/
+helm repo add nginx-stable https://helm.nginx.com/stable
+helm repo update
+
+kubectl create ns nginx-ingress
+
+helm upgrade --install nginx-ingress-release nginx-stable/nginx-ingress --wait --namespace=nginx-ingress
+kubectl get services -n nginx-ingress
+~~~
+
 ### 3. Cert-manager
 
 ~~~bash
@@ -3990,10 +4001,9 @@ env:
 Запустим установку `chartmuseum`
 ~~~bash
 kubectl create ns chartmuseum
-
 kubectl apply -f cert-manager/acme-issuer.yaml
 
-helm upgrade --install chartmuseum stable/chartmuseum --wait \
+helm upgrade --install chartmuseum-release stable/chartmuseum --wait \
  --namespace=chartmuseum \
  --version=2.13.2 \
  -f chartmuseum/values.yaml
@@ -4123,9 +4133,50 @@ release "harbor" uninstalled -->
 ~~~
 
 Деплой сваливается с ошибкой, возможно из-за `Prerequisites Kubernetes cluster 1.20+`, но открывается
-
 ![2.png](kubernetes-templating/harbor/2.png)
 
+###  6. harbor
+
+Создаем свой helm chart
+
+~~~bash
+helm create kubernetes-templating/hipster-shop
+rm kubernetes-templating/hipster-shop/values.yaml
+rm -rf kubernetes-templating/hipster-shop/templates/*
+wget https://raw.githubusercontent.com/express42/otus-platform-snippets/master/Module-04/05-Templating/manifests/all-hipster-shop.yaml \
+-O kubernetes-templating/hipster-shop/templates/all-hipster-shop.yaml
+~~~
+
+В целом, helm chart уже готов, можем попробовать установить его:
+~~~bash
+helm upgrade --install hipster-shop-release kubernetes-templating/hipster-shop --namespace hipster-shop
+
+helm ls -n hipster-shop
+NAME                    NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+hipster-shop-release    hipster-shop    1               2022-08-14 21:27:44.577702713 +0300 MSK deployed        hipster-shop-0.1.0      1.16.0
+
+kubectl get services -n hipster-shop
+NAME                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+adservice               ClusterIP   10.96.155.77    <none>        9555/TCP       52m
+cartservice             ClusterIP   10.96.235.220   <none>        7070/TCP       52m
+checkoutservice         ClusterIP   10.96.239.136   <none>        5050/TCP       52m
+currencyservice         ClusterIP   10.96.223.149   <none>        7000/TCP       52m
+emailservice            ClusterIP   10.96.137.166   <none>        5000/TCP       52m
+frontend                NodePort    10.96.251.210   <none>        80:31724/TCP   52m
+paymentservice          ClusterIP   10.96.214.16    <none>        50051/TCP      52m
+productcatalogservice   ClusterIP   10.96.129.151   <none>        3550/TCP       52m
+recommendationservice   ClusterIP   10.96.183.81    <none>        8080/TCP       52m
+redis-cart              ClusterIP   10.96.194.79    <none>        6379/TCP       52m
+shippingservice         ClusterIP   10.96.227.81    <none>        50051/TCP      52m
+
+kubectl get nodes -o wide
+NAME                        STATUS   ROLES    AGE     VERSION   INTERNAL-IP   EXTERNAL-IP    OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+cl10mmbi5mn9mdav2rr8-aguk   Ready    <none>   4h48m   v1.21.5   10.128.0.3    51.250.1.154   Ubuntu 20.04.4 LTS   5.4.0-117-generic   docker://20.10.17
+~~~
+
+Проверяем работу `UI`
+
+![3.png](kubernetes-templating/hipster-shop/3.png)
 
 
 
