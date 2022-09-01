@@ -33,7 +33,7 @@ expose:
       notarySecretName: ""
   ingress:
     hosts:
-      core: harbor.51.250.82.244.nip.io
+      core: harbor.51.250.85.208.nip.io
       #notary: notary.harbor.domain
     # set to the type of ingress controller if it has specific requirements.
     # leave as `default` for most ingress controllers.

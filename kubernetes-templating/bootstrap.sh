@@ -20,11 +20,11 @@ helm install \
   --set prometheus.enabled=false \
   --set webhook.timeoutSeconds=4
 
+kubectl apply -f cert-manager/acme-issuer.yaml
+
 kubectl --namespace nginx-ingress get services -o wide
 
 kubectl create ns chartmuseum
-
-kubectl apply -f cert-manager/acme-issuer.yaml
 
 helm upgrade --install chartmuseum stable/chartmuseum --wait \
  --namespace=chartmuseum \
@@ -34,3 +34,6 @@ helm upgrade --install chartmuseum stable/chartmuseum --wait \
 #helm uninstall chartmuseum --namespace=chartmuseum
 
 kubectl get secrets -n chartmuseum
+
+kubectl create ns harbor
+helm upgrade --install harbor harbor/harbor --wait --namespace=harbor --version=1.1.2 -f ./harbor/values.yaml

@@ -4074,70 +4074,73 @@ externalURL: https://harbor.51.250.83.159.nip.io/
 notary:
   enabled: false
 ~~~diff
-diff values.yaml values.yaml.orig
+diff values.yaml.orig values.yaml
 19,20c19,20
-<     certSource: secret
-<     #auto:
+<     certSource: auto
+<     auto:
 ---
->     certSource: auto
->     auto:
+>     certSource: secret
+>     #auto:
+23c23
+<       commonName: ""
+---
+>     #  commonName: ""
 28c28
-<       secretName: "harbor-ingress-tls"
+<       secretName: ""
 ---
->       secretName: ""
+>       secretName: "harbor-ingress-tls"
 36,37c36,37
-<       core: harbor.51.250.83.159.nip.io
-<       #notary: notary.harbor.domain
+<       core: core.harbor.domain
+<       notary: notary.harbor.domain
 ---
->       core: core.harbor.domain
->       notary: notary.harbor.domain
+>       core: harbor.51.250.85.208.nip.io
+>       #notary: notary.harbor.domain
 43c43
-<     controller: nginx
+<     controller: default
 ---
->     controller: default
-54,56d53
-<       cert-manager.io/cluster-issuer: letsencrypt-prod
-<       cert-manage.io/acme-challenge-type: http01
-<       kubernetes.io/ingress.class: nginx
-58d54
-<       enabled: false
-130c126
-< externalURL: https://harbor.51.250.83.159.nip.io/
+>     controller: nginx
+53a54,56
+>       cert-manager.io/cluster-issuer: letsencrypt-prod
+>       cert-manage.io/acme-challenge-type: http01
+>       kubernetes.io/ingress.class: nginx
+54a58
+>       enabled: false
+126c130
+< externalURL: https://core.harbor.domain
 ---
-> externalURL: https://core.harbor.domain
+> externalURL: https://harbor.51.250.83.159.nip.io/
 ~~~
 
 ~~~
-helm upgrade --install harbor harbor/harbor --wait --namespace=harbor --version=1.1.2 -f ./harbor/values.yaml
-W0810 22:13:07.205174   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
-W0810 22:13:07.226829   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
-W0810 22:13:07.272692   60313 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
-Error: UPGRADE FAILED: Get "https://51.250.93.64/apis/apps/v1/namespaces/harbor/deployments/harbor-harbor-clair": context deadline exceeded
+helm upgrade --install harbor harbor/harbor --wait --namespace=harbor --version=*.*.* -f ./harbor/values.yaml
+Release "harbor" does not exist. Installing it now.
+NAME: harbor
+LAST DEPLOYED: Sun Aug 14 23:09:21 2022
+NAMESPACE: harbor
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Please wait for several minutes for Harbor deployment to complete.
+Then you should be able to visit the Harbor portal at https://harbor.51.250.83.159.nip.io/
+For more details, please visit https://github.com/goharbor/harbor
+
 
 helm ls -n harbor
-NAME    NAMESPACE       REVISION        UPDATED                                 STATUS  CHART           APP VERSION
-harbor  harbor          3               2022-08-10 22:13:03.828296928 +0300 MSK failed  harbor-1.1.2    1.8.2
+NAME    NAMESPACE       REVISION        UPDATED                                 STATUS          CHART           APP VERSION
+harbor  harbor          1               2022-08-14 23:09:21.597945676 +0300 MSK deployed        harbor-1.9.3    2.5.3
 
 kubectl get secrets -n harbor -l owner=helm
 NAME                           TYPE                 DATA   AGE
-sh.helm.release.v1.harbor.v1   helm.sh/release.v1   1      3m20s
-
-<!-- helm uninstall harbor -n harbor
-W0810 22:24:31.872440   64453 warnings.go:70] extensions/v1beta1 Ingress is deprecated in v1.14+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
-These resources were kept due to the resource policy:
-[PersistentVolumeClaim] harbor-harbor-chartmuseum
-[PersistentVolumeClaim] harbor-harbor-jobservice
-[PersistentVolumeClaim] harbor-harbor-registry
-
-release "harbor" uninstalled -->
+sh.helm.release.v1.harbor.v1   helm.sh/release.v1   1      6m5s
 ~~~
 
-Деплой сваливается с ошибкой, возможно из-за `Prerequisites Kubernetes cluster 1.20+`, но открывается
+Проверяем:
 ![2.png](kubernetes-templating/harbor/2.png)
 
-###  6. harbor
 
-Создаем свой helm chart
+
+###  6. Создаем свой helm chart
 
 ~~~bash
 helm create kubernetes-templating/hipster-shop
@@ -4178,8 +4181,59 @@ cl10mmbi5mn9mdav2rr8-aguk   Ready    <none>   4h48m   v1.21.5   10.128.0.3    51
 
 ![3.png](kubernetes-templating/hipster-shop/3.png)
 
+Вынесем все что связано с frontend в отдельный helm chart.
+~~~bash
+helm create kubernetes-templating/frontend
+~~~
 
+Аналогично чарту hipster-shop удалим файл `values.yaml` и файлы в
+директории `templates` , создаваемые по умолчанию.
+Выделим из файла `all-hipster-shop.yaml` манифесты для установки микросервиса `frontend`.
+В директории `templates` чарта `frontend` создадим файлы:
+- `deployment.yaml` - должен содержать соответствующую часть из файла `all-hipster-shop.yaml`
+- `service.yaml` - должен содержать соответствующую часть из файла `allhipster-shop.yaml`
+- `ingress.yaml` - создадим самостоятельно.
+
+Переустановим 'hipster-shop'
+~~~bash
+kubectl create ns nginx-ingress
+
+helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --wait \
+--namespace=nginx-ingress
+
+#Install CustomResourceDefinitions
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.9.1/cert-manager.crds.yaml
+
+helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.9.1 \
+  --set prometheus.enabled=false \
+  --set webhook.timeoutSeconds=4
+
+kubectl apply -f kubernetes-templating/cert-manager/acme-issuer.yaml
+
+kubectl --namespace nginx-ingress get services -o wide
+
+kubectl create ns hipster-shop
+helm upgrade --install hipster-shop-release kubernetes-templating/hipster-shop --namespace hipster-shop
+helm ls -n hipster-shop
+NAME                    NAMESPACE       RsEVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+hipster-shop-release    hipster-shop    1               2022-08-25 10:46:37.52793367 +0300 MSK  deployed        hipster-shop-0.1.0      1.16.0
+
+helm upgrade --install frontend kubernetes-templating/frontend --namespace hipster-shop
+Release "frontend" has been upgraded. Happy Helming!
+NAME: frontend
+LAST DEPLOYED: Thu Aug 25 11:11:01 2022
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 3
+TEST SUITE: None
+~~~
 
 # **Полезное:**
+
+[Securing NGINX-ingress](https://cert-manager.io/docs/tutorials/acme/nginx-ingress/)
 
 </details>
